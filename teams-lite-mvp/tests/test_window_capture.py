@@ -1,0 +1,84 @@
+import tempfile
+import threading
+import time
+import unittest
+from datetime import datetime, timezone
+from pathlib import Path
+
+from PIL import Image
+
+from teams_lite.window_capture import (
+    CapturedFrame,
+    FrameSampler,
+    TeamsWindow,
+    TeamsWindowUnavailable,
+    capture_teams_frame,
+    select_teams_window,
+)
+
+
+class WindowCaptureTests(unittest.TestCase):
+    def test_selects_largest_matching_teams_window_across_monitors(self):
+        windows = [
+            TeamsWindow(1, "Teams Lite", (0, 0, 1200, 800)),
+            TeamsWindow(2, "Microsoft Teams", (-1920, 0, -960, 700)),
+            TeamsWindow(3, "Reunión | Microsoft Teams", (0, 0, 1600, 900)),
+        ]
+
+        selected = select_teams_window(windows)
+
+        self.assertEqual(3, selected.handle)
+
+    def test_capture_writes_recoverable_frame_with_relative_time(self):
+        window = TeamsWindow(7, "Reunión | Microsoft Teams", (-1200, 10, -200, 710))
+        calls = []
+
+        def grabber(**kwargs):
+            calls.append(kwargs)
+            return Image.new("RGB", (10, 10), "white")
+
+        with tempfile.TemporaryDirectory() as temp:
+            frame = capture_teams_frame(
+                Path(temp),
+                meeting_origin_monotonic=100.0,
+                windows=lambda: [window],
+                grabber=grabber,
+                monotonic=lambda: 112.5,
+                utc_now=lambda: datetime(2026, 11, 12, 14, 32, 5, tzinfo=timezone.utc),
+            )
+
+            self.assertEqual(12.5, frame.offset_seconds)
+            self.assertEqual(7, frame.window_handle)
+            self.assertTrue(frame.path.is_file())
+            self.assertEqual({"window": 7}, calls[0])
+
+    def test_missing_teams_window_fails_without_capturing_desktop(self):
+        with tempfile.TemporaryDirectory() as temp:
+            with self.assertRaises(TeamsWindowUnavailable):
+                capture_teams_frame(Path(temp), 0, windows=lambda: [])
+            self.assertEqual([], list(Path(temp).iterdir()))
+
+    def test_sampler_runs_off_thread_and_stops_cleanly(self):
+        captured = []
+        ready = threading.Event()
+
+        def capture():
+            frame = CapturedFrame(Path("frame.png"), len(captured), "2026-11-12T14:32:05+00:00", 1)
+            captured.append(frame)
+            if len(captured) >= 2:
+                ready.set()
+            return frame
+
+        sampler = FrameSampler(capture, lambda frame: None, interval_seconds=0.01)
+        started = time.monotonic()
+        sampler.start()
+        self.assertLess(time.monotonic() - started, 0.1)
+        self.assertTrue(ready.wait(1))
+        sampler.stop()
+
+        self.assertFalse(sampler.running)
+        self.assertEqual([], sampler.errors)
+
+
+if __name__ == "__main__":
+    unittest.main()
