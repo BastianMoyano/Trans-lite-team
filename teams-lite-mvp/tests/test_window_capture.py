@@ -4,6 +4,7 @@ import time
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest import mock
 
 from PIL import Image
 
@@ -78,6 +79,83 @@ class WindowCaptureTests(unittest.TestCase):
 
         self.assertFalse(sampler.running)
         self.assertEqual([], sampler.errors)
+
+    def test_sampler_stop_is_safe_during_start_and_from_callback(self):
+        original_thread = threading.Thread
+        start_entered = threading.Event()
+        release_start = threading.Event()
+        failures = []
+
+        class DelayedThread:
+            def __init__(self, *args, **kwargs):
+                self.real = original_thread(*args, **kwargs)
+                self.started = False
+
+            def start(self):
+                start_entered.set()
+                release_start.wait(1)
+                self.real.start()
+                self.started = True
+
+            def is_alive(self):
+                return self.real.is_alive()
+
+            def join(self):
+                if not self.started:
+                    raise RuntimeError("cannot join thread before it is started")
+                self.real.join()
+
+            @property
+            def ident(self):
+                return self.real.ident
+
+        sampler = None
+
+        def capture():
+            return CapturedFrame(Path("frame.png"), 0, "2026-11-12T14:32:05+00:00", 1)
+
+        def stop_from_callback(_frame):
+            sampler.stop()
+
+        sampler = FrameSampler(capture, stop_from_callback, interval_seconds=0.01)
+        with mock.patch("teams_lite.window_capture.threading.Thread", DelayedThread):
+            starter = original_thread(target=lambda: _record_failure(sampler.start, failures))
+            starter.start()
+            self.assertTrue(start_entered.wait(1))
+            stopper = original_thread(target=lambda: _record_failure(sampler.stop, failures))
+            stopper.start()
+            release_start.set()
+            starter.join()
+            stopper.join()
+
+        self.assertEqual([], failures)
+        self.assertEqual([], sampler.errors)
+
+    def test_failed_image_save_removes_partial_frame(self):
+        window = TeamsWindow(7, "Microsoft Teams", (0, 0, 100, 100))
+
+        class BrokenImage:
+            def save(self, path, format):
+                Path(path).write_bytes(b"partial")
+                raise OSError("disk full")
+
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp)
+            with self.assertRaises(OSError):
+                capture_teams_frame(
+                    output,
+                    0,
+                    windows=lambda: [window],
+                    grabber=lambda **kwargs: BrokenImage(),
+                )
+            self.assertEqual([], list(output.iterdir()))
+
+
+def _record_failure(action, failures):
+    try:
+        action()
+    except Exception as exc:
+        failures.append(str(exc))
 
 
 if __name__ == "__main__":

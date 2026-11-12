@@ -107,8 +107,11 @@ def capture_teams_frame(
     stamp = captured_utc.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     path = destination / f"teams-{stamp}.png"
     temporary = destination / f".{path.stem}.part.png"
-    image.save(temporary, format="PNG")
-    os.replace(temporary, path)
+    try:
+        image.save(temporary, format="PNG")
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
     return CapturedFrame(
         path,
         max(0.0, captured_monotonic - meeting_origin_monotonic),
@@ -133,22 +136,27 @@ class FrameSampler:
         self.errors: list[str] = []
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._lifecycle = threading.RLock()
 
     @property
     def running(self) -> bool:
-        return self._thread is not None and self._thread.is_alive()
+        with self._lifecycle:
+            return self._thread is not None and self._thread.is_alive()
 
     def start(self) -> None:
-        if self.running:
-            raise RuntimeError("El muestreo visual ya está en ejecución")
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._run, name="teams-window-sampler", daemon=True)
-        self._thread.start()
+        with self._lifecycle:
+            if self.running:
+                raise RuntimeError("El muestreo visual ya está en ejecución")
+            self._stop.clear()
+            self._thread = threading.Thread(target=self._run, name="teams-window-sampler", daemon=True)
+            self._thread.start()
 
     def stop(self) -> None:
         self._stop.set()
-        if self._thread is not None:
-            self._thread.join()
+        with self._lifecycle:
+            thread = self._thread
+        if thread is not None and thread.ident is not None and thread.ident != threading.get_ident():
+            thread.join()
 
     def _run(self) -> None:
         while not self._stop.is_set():
