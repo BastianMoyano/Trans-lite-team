@@ -1,0 +1,11 @@
+{
+  "data_dir": "./data",
+  "sample_rate": 48000,
+  "segment_seconds": 30,
+  "auto_transcribe": true,
+  "parakeet_model_dir": "./models/parakeet-v3",
+  "ocr_enabled": false,
+  "ocr_region": null,
+  "tesseract_cmd": null
+}
+

@@ -1,0 +1,37 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "teams-lite"
+version = "0.1.0"
+description = "Recoverable Teams audio capture with offline CPU transcription"
+readme = "README.md"
+requires-python = ">=3.12,<3.15"
+dependencies = [
+  "numpy>=2.0,<3",
+  "PySide6>=6.11,<6.13",
+  "SoundCard==0.4.6",
+]
+
+[project.optional-dependencies]
+asr = [
+  "onnx-asr[cpu,hub]==0.12.0",
+  "onnxruntime==1.31.1",
+]
+ocr = [
+  "Pillow>=11,<13",
+  "pytesseract>=0.3.13,<0.4",
+]
+dev = ["pytest>=8,<10"]
+
+[project.scripts]
+teams-lite = "teams_lite.app:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/teams_lite"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
