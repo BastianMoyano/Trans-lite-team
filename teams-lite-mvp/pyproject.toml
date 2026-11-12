@@ -23,6 +23,9 @@ ocr = [
   "Pillow>=11,<13",
   "pytesseract>=0.3.13,<0.4",
 ]
+vision = [
+  "wevisone-vl @ git+https://github.com/Tencent/WeVisOne-VL.git@main",
+]
 dev = ["pytest>=8,<10"]
 
 [project.scripts]
