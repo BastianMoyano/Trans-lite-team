@@ -16,6 +16,10 @@ class AppConfig:
     ocr_enabled: bool = False
     ocr_region: tuple[int, int, int, int] | None = None
     tesseract_cmd: str | None = None
+    visual_speaker_enabled: bool = False
+    visual_sample_seconds: float = 2.0
+    teams_window_title: str = "Microsoft Teams"
+    wevisone_model_dir: str = "./models/wevisone-vl-2b"
 
     def validate(self) -> "AppConfig":
         if self.sample_rate not in (16_000, 44_100, 48_000):
@@ -26,6 +30,10 @@ class AppConfig:
             len(self.ocr_region) != 4 or any(not isinstance(value, int) for value in self.ocr_region)
         ):
             raise ValueError("ocr_region debe contener cuatro coordenadas enteras")
+        if not 0.5 <= self.visual_sample_seconds <= 60:
+            raise ValueError("visual_sample_seconds debe estar entre 0.5 y 60")
+        if not self.teams_window_title.strip():
+            raise ValueError("teams_window_title no puede estar vacío")
         return self
 
 

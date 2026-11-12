@@ -15,6 +15,8 @@ It does not use Node, Electron, a GPU, or private Microsoft Teams APIs.
 - Timestamped JSON and plain-text transcript export.
 - Conservative labels: microphone is `Local`; loopback is `Remote/Unknown`.
 - Optional screenshot plus Tesseract OCR name hints.
+- Optional Microsoft Teams window sampling across multiple monitors.
+- Optional WeVisOne-VL active-tile localization and timestamped visible-name attribution.
 - Unit tests that do not require Teams, audio hardware, Tesseract, or model downloads.
 
 ## What still requires validation on real Teams PCs
@@ -23,10 +25,11 @@ It does not use Node, Electron, a GPU, or private Microsoft Teams APIs.
 - Long meetings, sleep/resume, device changes, Bluetooth headsets, and Teams device switching.
 - Actual Parakeet model download/layout, memory use, speed, and accuracy on target CPUs.
 - Timestamp drift between independent microphone and loopback devices.
-- OCR crop coordinates for each Teams layout, display scale, language, and theme.
+- Active-speaker border and name recognition across Teams layouts, display scales, languages, and themes.
+- WeVisOne-VL 2B latency and memory use on the target machine's CPU-only runtime.
 - A packaged installer and code signing.
 
-The application cannot reliably identify individual remote speakers: Teams output is normally a mixed stream. OCR reads visible text only. It **does not identify voices** and must not be presented as speaker recognition.
+The application does not identify a person from their voice. When enabled, it uses Teams' visible active-speaker border and participant label as time-bounded evidence. Missing, weak, or conflicting visual evidence remains `Remoto/Desconocido`.
 
 ## Requirements
 
@@ -35,6 +38,7 @@ The application cannot reliably identify individual remote speakers: Teams outpu
 - 32 GB RAM recommended for the full transcription option.
 - Microsoft Visual C++ 2019 or later runtime for ONNX Runtime.
 - Tesseract OCR only if the optional OCR feature is enabled.
+- Approximately 5 GB of model storage plus substantial RAM if WeVisOne-VL 2B is enabled.
 
 Compatibility was checked on 2026-11-12 against PySide6 6.11–6.12, SoundCard 0.4.6, onnx-asr 0.12.0, and ONNX Runtime 1.31.1. `onnx-asr` is a third-party Beta package, so keep these versions pinned until real-device validation is complete.
 
@@ -78,6 +82,17 @@ This downloads community ONNX conversion files used by `onnx-asr`; it is not NVI
 
 Install Tesseract separately and set `tesseract_cmd` in `config.json` if it is not on `PATH`. Set `ocr_enabled` to `true`. `ocr_region` is either `null` for the whole screen or `[left, top, right, bottom]` for a Teams participant area.
 
+### Optional active-speaker identification
+
+Install the visual runtime separately because PyTorch and WeVisOne-VL are large:
+
+```powershell
+pip install -e ".[vision]"
+hf download tencent/WeVisOne-VL-2B --local-dir models/wevisone-vl-2b
+```
+
+Set `visual_speaker_enabled` to `true`. `visual_sample_seconds` controls sampling frequency, `teams_window_title` selects the visible Teams window, and `wevisone_model_dir` points to the local model. The model runs outside the audio threads; visual failure never stops audio recording.
+
 ## Run
 
 ```powershell
@@ -89,7 +104,7 @@ python -m teams_lite --config config.json
 1. Confirm the Windows default input/output devices match the devices Teams uses.
 2. Notify participants and obtain any required consent.
 3. Start recording before the important conversation begins.
-4. Optionally capture visible name hints while the participant panel is on screen.
+4. Optionally enable active-speaker identification before recording; keep the Teams meeting window visible.
 5. Stop recording. WAV finalization completes before CPU transcription starts.
 
 Meeting data is stored under `data/<meeting-id>/`; metadata is in `data/meetings.sqlite3`.
@@ -121,6 +136,9 @@ src/teams_lite/
   transcription.py  CPU ONNX transcription and timestamped exports
   speakers.py       conservative source labels/manual mapping
   ocr.py            optional screenshot OCR hints
+  window_capture.py multi-monitor Teams window sampling
+  wevisone.py        optional active-tile and visible-name detector
+  visual_speakers.py timestamped evidence persistence and transcript matching
   config.py         validated JSON settings
 tests/               hardware-independent unit tests
 odd/tasks/           implementation logbook and acceptance specs
@@ -133,7 +151,7 @@ odd/tasks/           implementation logbook and acceptance specs
 - Independent devices can drift. Timestamps are useful alignment hints, not sample-accurate synchronization.
 - Current transcript times are audio-chunk boundaries, not word-level timestamps.
 - Fixed 20-second ASR chunks can split speech at a boundary; VAD is a future improvement.
-- Multiple remote participants remain mixed and labeled `Remote/Unknown` unless a human supplies a mapping.
+- Remote audio remains physically mixed. Visual attribution labels a 20-second ASR chunk only when one name has dominant overlapping evidence.
 - Construct only one `Storage` instance per data directory while recording; startup recovery is intentionally eager.
 - `Recorder.stop()` waits for device reads and segment finalization. A faulty driver may delay shutdown.
 - Recording laws and company policies vary. The operator is responsible for notice and consent.

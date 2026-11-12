@@ -1,7 +1,9 @@
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
@@ -84,6 +86,71 @@ class AppTests(unittest.TestCase):
                 self.application.processEvents()
                 self.assertEqual(window.transcript_viewer.toPlainText(), '')
                 self.assertIn('todavía no está disponible', window.transcript_viewer.placeholderText())
+            finally:
+                window.close()
+
+    def test_visual_speaker_control_uses_configured_state(self):
+        with tempfile.TemporaryDirectory() as d:
+            window = MainWindow(AppConfig(
+                data_dir=d,
+                auto_transcribe=False,
+                visual_speaker_enabled=True,
+            ))
+            window.timer.stop()
+            try:
+                self.assertTrue(window.visual_speaker_checkbox.isChecked())
+                self.assertIn("hablante activo", window.visual_speaker_checkbox.text().casefold())
+            finally:
+                window.close()
+
+    def test_visual_tracking_follows_recording_lifecycle(self):
+        class FakeRecorder:
+            def __init__(self, store, meeting_id, **kwargs):
+                self.store = store
+                self.meeting_id = meeting_id
+                self.errors = []
+
+            def start(self):
+                pass
+
+            def stop(self):
+                self.store.finish_meeting(self.meeting_id)
+
+        class FakeSampler:
+            instances = []
+
+            def __init__(self, capture, on_frame, **kwargs):
+                self.started = False
+                self.stopped = False
+                self.errors = []
+                self.instances.append(self)
+
+            def start(self):
+                self.started = True
+
+            def stop(self):
+                self.stopped = True
+
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch("teams_lite.app.Recorder", FakeRecorder), \
+             mock.patch("teams_lite.app.FrameSampler", FakeSampler):
+            window = MainWindow(AppConfig(
+                data_dir=d,
+                auto_transcribe=False,
+                visual_speaker_enabled=True,
+            ))
+            window.timer.stop()
+            try:
+                window.start_recording()
+                sampler = FakeSampler.instances[-1]
+                self.assertTrue(sampler.started)
+                window.stop_recording()
+                deadline = time.monotonic() + 2
+                while window.recorder is not None and time.monotonic() < deadline:
+                    self.application.processEvents()
+                    time.sleep(0.01)
+                self.assertTrue(sampler.stopped)
+                self.assertIsNone(window.recorder)
             finally:
                 window.close()
 

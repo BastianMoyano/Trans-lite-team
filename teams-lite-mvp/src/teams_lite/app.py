@@ -5,6 +5,7 @@ import argparse
 from pathlib import Path
 import sys
 import threading
+import time
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QFont
@@ -32,6 +33,9 @@ from .config import AppConfig, load_config
 from .ocr import capture_name_hints
 from .storage import Storage
 from .transcription import AudioSource, CapabilityError, export_transcript, transcribe_recordings
+from .visual_speakers import append_observation, apply_visual_speakers, load_observations
+from .wevisone import WeVisOneDetector
+from .window_capture import FrameSampler, capture_teams_frame
 
 
 APP_STYLESHEET = """
@@ -202,6 +206,7 @@ class MainWindow(QMainWindow):
         self.store = Storage(config.data_dir)
         self.meeting_id: str | None = None
         self.recorder: Recorder | None = None
+        self.visual_sampler: FrameSampler | None = None
         self.signals = AppSignals()
         self.signals.status.connect(self._set_status)
         self.signals.recording_stopped.connect(self._after_stop)
@@ -281,6 +286,8 @@ class MainWindow(QMainWindow):
         self.ocr_checkbox = QCheckBox("Activar OCR visual opcional")
         self.ocr_checkbox.setChecked(self.config.ocr_enabled)
         self.ocr_button = QPushButton("Capturar nombres visibles")
+        self.visual_speaker_checkbox = QCheckBox("Identificar hablante activo con WeVisOne-VL")
+        self.visual_speaker_checkbox.setChecked(self.config.visual_speaker_enabled)
         self.stop_button.setEnabled(False)
         self.ocr_button.setEnabled(False)
         self._set_recording_controls(recording=False)
@@ -293,6 +300,7 @@ class MainWindow(QMainWindow):
         ocr_controls.setSpacing(10)
         ocr_controls.addWidget(self.ocr_checkbox)
         ocr_controls.addWidget(self.ocr_button)
+        ocr_controls.addWidget(self.visual_speaker_checkbox)
         ocr_controls.addStretch(1)
         recording_layout.addLayout(ocr_controls)
 
@@ -371,6 +379,7 @@ class MainWindow(QMainWindow):
             return
         try:
             meeting_id = self.store.create_meeting(self.title_input.text().strip() or "Reunión de Teams")
+            recording_origin = time.monotonic()
             recorder = Recorder(
                 self.store,
                 meeting_id,
@@ -383,6 +392,8 @@ class MainWindow(QMainWindow):
             return
         self.meeting_id = meeting_id
         self.recorder = recorder
+        if self.visual_speaker_checkbox.isChecked():
+            self._start_visual_tracking(meeting_id, recording_origin)
         self._set_recording_controls(recording=True)
         self.ocr_button.setEnabled(self.ocr_checkbox.isChecked())
         self._set_status("Grabando el micrófono y el audio del sistema…")
@@ -392,12 +403,17 @@ class MainWindow(QMainWindow):
         if self.recorder is None or self.meeting_id is None:
             return
         recorder, meeting_id = self.recorder, self.meeting_id
+        visual_sampler, self.visual_sampler = self.visual_sampler, None
         self._set_recording_controls(recording=True, finalizing=True)
         self.ocr_button.setEnabled(False)
         self._set_status("Finalizando los segmentos de audio recuperables…")
 
         def work() -> None:
             try:
+                if visual_sampler is not None:
+                    visual_sampler.stop()
+                    if visual_sampler.errors:
+                        self.store.add_event(meeting_id, "visual_tracking_warning", visual_sampler.errors[-1])
                 recorder.stop()
                 if recorder.errors:
                     self.signals.failure.emit("; ".join(recorder.errors))
@@ -447,6 +463,8 @@ class MainWindow(QMainWindow):
                 chunk_seconds=20,
             )
             meeting_dir = Path(self.config.data_dir) / meeting_id
+            observations = load_observations(meeting_dir / "speaker-observations.jsonl")
+            transcript = apply_visual_speakers(transcript, observations)
             export_transcript(transcript, meeting_dir / "transcript.json", meeting_dir / "transcript.txt")
             self.signals.transcript_ready.emit(str(meeting_dir / "transcript.txt"))
         except CapabilityError as exc:
@@ -471,6 +489,34 @@ class MainWindow(QMainWindow):
                 self.signals.failure.emit(f"Falló la captura OCR: {exc}")
 
         threading.Thread(target=work, name="visual-ocr", daemon=True).start()
+
+    def _start_visual_tracking(self, meeting_id: str, recording_origin: float) -> None:
+        meeting_dir = Path(self.config.data_dir) / meeting_id
+        detector = WeVisOneDetector(
+            model_path=self.config.wevisone_model_dir,
+            device="cpu",
+            dtype="float32",
+            observation_seconds=self.config.visual_sample_seconds,
+        )
+
+        def capture():
+            return capture_teams_frame(
+                meeting_dir / "visual-frames",
+                recording_origin,
+                title_hint=self.config.teams_window_title,
+            )
+
+        def detect(frame) -> None:
+            observation = detector.detect(frame)
+            if observation is not None:
+                append_observation(meeting_dir / "speaker-observations.jsonl", observation)
+
+        self.visual_sampler = FrameSampler(
+            capture,
+            detect,
+            interval_seconds=self.config.visual_sample_seconds,
+        )
+        self.visual_sampler.start()
 
     def _refresh(self) -> None:
         selected_id = self._selected_meeting_id()

@@ -6,6 +6,10 @@
   "parakeet_model_dir": "./models/parakeet-v3",
   "ocr_enabled": false,
   "ocr_region": null,
-  "tesseract_cmd": null
+  "tesseract_cmd": null,
+  "visual_speaker_enabled": false,
+  "visual_sample_seconds": 2.0,
+  "teams_window_title": "Microsoft Teams",
+  "wevisone_model_dir": "./models/wevisone-vl-2b"
 }
 
