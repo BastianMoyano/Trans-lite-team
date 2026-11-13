@@ -24,8 +24,9 @@ ocr = [
   "pytesseract>=0.3.13,<0.4",
 ]
 vision = [
-  "wevisone-vl @ git+https://github.com/Tencent/WeVisOne-VL.git@main",
+  "wevisone-vl @ git+https://github.com/Tencent/WeVisOne-VL.git@9a6bcd85404505df0d05cfb5d97512ccacf35dee",
 ]
+build = ["pyinstaller>=6.16,<7"]
 dev = ["pytest>=8,<10"]
 
 [project.scripts]
@@ -33,6 +34,9 @@ teams-lite = "teams_lite.app:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/teams_lite"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
