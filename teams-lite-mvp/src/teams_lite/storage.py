@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
 import shutil
 import sqlite3
+import stat
 import time
 import uuid
 import wave
@@ -13,6 +15,42 @@ from datetime import datetime, timezone
 
 def utc_now():
     return datetime.now(timezone.utc).isoformat()
+
+
+def local_now():
+    return datetime.now()
+
+
+# Keeps <data>/<meeting>/<segment file> well under the 260-character Windows path limit.
+MAX_FOLDER_TITLE_CHARS = 40
+_INVALID_NAME_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+
+
+def meeting_folder_name(title, moment):
+    """Readable, sortable folder name: '2026-11-13 07-44 Title'."""
+    safe = re.sub(r'\s+', ' ', _INVALID_NAME_CHARS.sub('_', str(title))).strip()
+    safe = safe[:MAX_FOLDER_TITLE_CHARS].rstrip(' .')
+    stamp = moment.strftime('%Y-%m-%d %H-%M')
+    return f'{stamp} {safe}' if safe else stamp
+
+
+def _clear_readonly_and_retry(function, path, _exc):
+    os.chmod(path, stat.S_IWRITE)
+    function(path)
+
+
+def _purge_directory(path, attempts=5, delay=0.2):
+    """Best-effort removal: OneDrive, antivirus or the indexer may briefly lock files."""
+    for attempt in range(attempts):
+        try:
+            shutil.rmtree(path, onexc=_clear_readonly_and_retry)
+            return True
+        except FileNotFoundError:
+            return True
+        except OSError:
+            if attempt + 1 < attempts:
+                time.sleep(delay * (attempt + 1))
+    return False
 
 
 class _Connection(sqlite3.Connection):
@@ -48,6 +86,7 @@ class Storage:
                     kind TEXT NOT NULL, detail TEXT NOT NULL);
             ''')
         self.recover()
+        self._purge_quarantine()
 
     def _connect(self):
         db = sqlite3.connect(self.db_path, timeout=30, factory=_Connection)
@@ -56,8 +95,14 @@ class Storage:
         return db
 
     def create_meeting(self, title='Meeting'):
-        meeting_id = uuid.uuid4().hex
+        base = meeting_folder_name(title, local_now())
         with self._connect() as db:
+            # Windows folder names are case-insensitive, so compare casefolded.
+            taken = {row['id'].casefold() for row in db.execute('SELECT id FROM meetings')}
+            taken.update(entry.name.casefold() for entry in self.root.iterdir())
+            meeting_id, copy = base, 2
+            while meeting_id.casefold() in taken:
+                meeting_id, copy = f'{base} ({copy})', copy + 1
             db.execute('INSERT INTO meetings VALUES (?,?,?,?,?)',
                        (meeting_id, title, utc_now(), None, 'recording'))
         (self.root / meeting_id).mkdir(exist_ok=True)
@@ -76,7 +121,8 @@ class Storage:
         meeting_dir = (self.root / meeting_id).resolve()
         if meeting_dir.parent != self.root:
             raise ValueError('ID de reunión no válido')
-        quarantine = self.root / f'.delete-{meeting_id}-{uuid.uuid4().hex}'
+        # Not named after the meeting: a long title would push nested paths past 260 chars.
+        quarantine = self.root / f'.delete-{uuid.uuid4().hex}'
         moved = False
         db = self._connect()
         try:
@@ -106,7 +152,14 @@ class Storage:
         finally:
             db.close()
         if moved:
-            shutil.rmtree(quarantine)
+            # The meeting is already deleted: a folder Windows keeps locked is retried
+            # here and swept again on the next startup, never reported as a failure.
+            _purge_directory(quarantine)
+
+    def _purge_quarantine(self):
+        for leftover in self.root.glob('.delete-*'):
+            if leftover.is_dir():
+                _purge_directory(leftover, attempts=1)
 
     def create_stream(self, meeting_id, kind, sample_rate, channels):
         stream_id = uuid.uuid4().hex
