@@ -70,14 +70,11 @@ begin
   Result := ExpandConstant('{localappdata}\TeamsLite\models\parakeet-v3');
 end;
 
-function TesseractPath: String;
-begin
-  Result := ExpandConstant('{commonpf64}\Tesseract-OCR\tesseract.exe');
-end;
-
+// Only hides the optional task: the app itself finds Tesseract at run time (ocr.find_tesseract).
 function TesseractInstalled: Boolean;
 begin
-  Result := FileExists(TesseractPath);
+  Result := FileExists(ExpandConstant('{commonpf64}\Tesseract-OCR\tesseract.exe')) or
+    FileExists(ExpandConstant('{commonpf32}\Tesseract-OCR\tesseract.exe'));
 end;
 
 procedure AddModelFile(const Name, Hash: String);
@@ -132,17 +129,20 @@ begin
   Result := True;
   DownloadPage.Clear;
   SetArrayLength(Pending, 0);
-  for Index := 0 to GetArrayLength(ModelNames) - 1 do
-    if not ModelFileIsCurrent(Index) then
-    begin
-      DownloadPage.Add('{#ModelBaseUrl}' + ModelNames[Index], ModelNames[Index], ModelHashes[Index]);
-      SetArrayLength(Pending, GetArrayLength(Pending) + 1);
-      Pending[GetArrayLength(Pending) - 1] := ModelNames[Index];
-    end;
-  if GetArrayLength(Pending) = 0 then
-    Exit;
+  // Hashing an existing 2.4 GB model takes several seconds: say so instead of looking frozen.
+  DownloadPage.SetText('Comprobando el modelo de transcripción ya instalado...', '');
+  DownloadPage.SetProgress(0, 0);
   DownloadPage.Show;
   try
+    for Index := 0 to GetArrayLength(ModelNames) - 1 do
+      if not ModelFileIsCurrent(Index) then
+      begin
+        DownloadPage.Add('{#ModelBaseUrl}' + ModelNames[Index], ModelNames[Index], ModelHashes[Index]);
+        SetArrayLength(Pending, GetArrayLength(Pending) + 1);
+        Pending[GetArrayLength(Pending) - 1] := ModelNames[Index];
+      end;
+    if GetArrayLength(Pending) = 0 then
+      Exit;
     try
       DownloadPage.Download; // verifies each file against its SHA-256
       ForceDirectories(ModelDir);
@@ -155,9 +155,11 @@ begin
           RaiseException('No se pudo guardar ' + Pending[Index] + ' en ' + ModelDir);
       end;
     except
+      // Logged too: in a /VERYSILENT install the message box is suppressed and only /LOG remains.
+      Log('Model installation failed: ' + GetExceptionMessage);
       if not DownloadPage.AbortedByUser then
-        SuppressibleMsgBox('No se pudo descargar el modelo de transcripción: ' + GetExceptionMessage + #13#10#13#10 +
-          'Revisa la conexión a internet y vuelve a intentarlo.', mbCriticalError, MB_OK, IDOK);
+        SuppressibleMsgBox('No se pudo instalar el modelo de transcripción: ' + GetExceptionMessage + #13#10#13#10 +
+          'Revisa la conexión a internet y el espacio libre en disco, y vuelve a intentarlo.', mbCriticalError, MB_OK, IDOK);
       Result := False;
     end;
   finally
@@ -181,7 +183,7 @@ end;
 
 procedure WriteDefaultConfig;
 var
-  ConfigPath, Base, Tesseract: String;
+  ConfigPath, Base: String;
   Lines: TArrayOfString;
 begin
   // An existing config.json holds the user's choices: upgrades keep it.
@@ -189,10 +191,6 @@ begin
   if FileExists(ConfigPath) then
     Exit;
   Base := ExpandConstant('{localappdata}\TeamsLite');
-  if TesseractInstalled or WizardIsTaskSelected('tesseract') then
-    Tesseract := JsonPath(TesseractPath)
-  else
-    Tesseract := 'null';
   SetArrayLength(Lines, 15);
   Lines[0] := '{';
   Lines[1] := '  "data_dir": ' + JsonPath(Base + '\data') + ',';
@@ -202,7 +200,8 @@ begin
   Lines[5] := '  "parakeet_model_dir": ' + JsonPath(ModelDir) + ',';
   Lines[6] := '  "ocr_enabled": false,';
   Lines[7] := '  "ocr_region": null,';
-  Lines[8] := '  "tesseract_cmd": ' + Tesseract + ',';
+  // null: the app looks for Tesseract on PATH and in its standard folders each time it runs.
+  Lines[8] := '  "tesseract_cmd": null,';
   Lines[9] := '  "visual_speaker_enabled": false,';
   Lines[10] := '  "visual_sample_seconds": 2.0,';
   Lines[11] := '  "teams_window_title": "Microsoft Teams",';
@@ -221,7 +220,11 @@ end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
-  // The model can be downloaded again; recorded meetings in data\ are always kept.
+  // Only the model this installer downloaded: it can be downloaded again. Other models the
+  // user placed next to it and recorded meetings in data\ are always kept.
   if CurUninstallStep = usPostUninstall then
-    DelTree(ExpandConstant('{localappdata}\TeamsLite\models'), True, True, True);
+  begin
+    DelTree(ModelDir, True, True, True);
+    RemoveDir(ExpandConstant('{localappdata}\TeamsLite\models')); // only when it is now empty
+  end;
 end;

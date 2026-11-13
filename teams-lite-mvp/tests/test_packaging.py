@@ -62,6 +62,15 @@ class InstallerTests(unittest.TestCase):
     def test_creates_a_desktop_shortcut(self):
         self.assertRegex(self.script, r'(?m)^Name: "\{autodesktop\}\\Teams Lite"; Filename: "\{app\}\\TeamsLite\.exe"; Tasks: desktopicon')
 
+    def test_config_leaves_tesseract_to_runtime_detection(self):
+        # A path written at install time goes stale when Tesseract is added, fails or moves later.
+        self.assertIn("'  \"tesseract_cmd\": null,'", self.script)
+        self.assertNotIn("JsonPath(TesseractPath)", self.script)
+
+    def test_uninstall_removes_only_the_downloaded_model(self):
+        self.assertIn("DelTree(ModelDir, True, True, True)", self.script)
+        self.assertNotIn(r"DelTree(ExpandConstant('{localappdata}\TeamsLite\models')", self.script)
+
     def test_downloads_every_model_file_from_a_pinned_revision_with_its_hash(self):
         files = re.findall(r"AddModelFile\('([^']+)', '([0-9a-f]{64})'\)", self.script)
         self.assertEqual(

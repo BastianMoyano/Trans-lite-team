@@ -80,7 +80,7 @@ This downloads community ONNX conversion files used by `onnx-asr`; it is not NVI
 
 ### Optional Tesseract
 
-Install Tesseract separately and set `tesseract_cmd` in `config.json` if it is not on `PATH`. Set `ocr_enabled` to `true` to build an attendee list for the meeting minutes:
+Install Tesseract separately. With `tesseract_cmd` set to `null`, the app looks for it on `PATH` and then in `Tesseract-OCR\tesseract.exe` under `%ProgramFiles%`, `%ProgramFiles(x86)%` and `%LOCALAPPDATA%\Programs`, where its Windows installer puts it without touching `PATH`. Set `tesseract_cmd` only for another location. Set `ocr_enabled` to `true` to build an attendee list for the meeting minutes:
 
 - Only the visible Teams window (`teams_window_title`) is read, never the whole screen. If Teams is not visible, nothing is captured.
 - The window is read when recording starts and every 60 seconds; "Capturar asistentes ahora" reads it on demand.
@@ -172,11 +172,12 @@ This builds the executable and then `dist/installer/TeamsLite-Setup-<version>.ex
 
 - Installs per user, without admin rights, to `%LOCALAPPDATA%\Programs\TeamsLite`, with a Start menu entry and a desktop shortcut (checked by default).
 - Downloads the Parakeet model (~2.4 GB, pinned Hugging Face revision, SHA-256 verified) to `%LOCALAPPDATA%\TeamsLite\models\parakeet-v3`. Files already present with the right hash are not downloaded again. Installation needs internet access for this step.
-- Writes `config.json` next to `TeamsLite.exe` with absolute paths: meetings in `%LOCALAPPDATA%\TeamsLite\data`, the model folder above, and Tesseract when it is installed. An existing `config.json` is kept on upgrade.
-- Optionally installs Tesseract OCR through winget (asks for admin rights).
+- Writes `config.json` next to `TeamsLite.exe` with absolute paths: meetings in `%LOCALAPPDATA%\TeamsLite\data` and the model folder above. `tesseract_cmd` stays `null`, so the app finds Tesseract even when it is installed later. An existing `config.json` is kept on upgrade.
+- Optionally installs Tesseract OCR through winget (asks for admin rights). The option is hidden when Tesseract is already installed.
+- Shows "Comprobando el modelo..." while it checks an existing model, which takes a few seconds; if the download fails it stays on the last page so you can retry, and a `/VERYSILENT` install records the reason in its `/LOG` file.
 - Never ships the build machine's `config.json` (it holds that PC's absolute paths).
 
-Uninstalling removes the program and the downloaded model; recorded meetings in `%LOCALAPPDATA%\TeamsLite\data` are kept. Meeting minutes still need the `claude` or `codex` CLI installed and signed in by each user; the installer does not bundle them.
+Uninstalling removes the program and the Parakeet model it downloaded (other folders in `%LOCALAPPDATA%\TeamsLite\models` stay); recorded meetings in `%LOCALAPPDATA%\TeamsLite\data` are kept. Meeting minutes still need the `claude` or `codex` CLI installed and signed in by each user; the installer does not bundle them.
 
 ### Using the app
 
