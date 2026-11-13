@@ -67,12 +67,31 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("'  \"tesseract_cmd\": null,'", self.script)
         self.assertNotIn("JsonPath(TesseractPath)", self.script)
 
+    def test_tesseract_is_installed_by_default_from_a_pinned_verified_download(self):
+        task = re.search(r'(?m)^Name: "tesseract";.*$', self.script)[0]
+        self.assertNotIn("unchecked", task)
+        self.assertIn(
+            "https://github.com/UB-Mannheim/tesseract/releases/download/v5.4.0.20240606/"
+            "tesseract-ocr-w64-setup-5.4.0.20240606.exe",
+            self.script,
+        )
+        self.assertIn("c885fff6998e0608ba4bb8ab51436e1c6775c2bafc2559a19b423e18678b60c9", self.script)
+        # winget shows no progress and may be missing; the setup is downloaded on the progress page.
+        self.assertNotIn("winget", self.script.lower())
+
+    def test_progress_page_lists_each_component_with_its_status(self):
+        for component in ("Modelo de transcripción", "Tesseract OCR"):
+            self.assertIn(component, self.script)
+        for status in ("Pendiente", "Comprobando", "Descargando", "Instalando", "Listo", "Ya instalado", "Omitido"):
+            self.assertIn(status, self.script)
+        self.assertIn("TotalBar", self.script)
+
     def test_uninstall_removes_only_the_downloaded_model(self):
         self.assertIn("DelTree(ModelDir, True, True, True)", self.script)
         self.assertNotIn(r"DelTree(ExpandConstant('{localappdata}\TeamsLite\models')", self.script)
 
     def test_downloads_every_model_file_from_a_pinned_revision_with_its_hash(self):
-        files = re.findall(r"AddModelFile\('([^']+)', '([0-9a-f]{64})'\)", self.script)
+        files = re.findall(r"AddModelFile\('([^']+)', '([0-9a-f]{64})', '[0-9]+'\)", self.script)
         self.assertEqual(
             sorted(name for name, _ in files),
             ["config.json", "decoder_joint-model.onnx", "encoder-model.onnx", "encoder-model.onnx.data", "vocab.txt"],

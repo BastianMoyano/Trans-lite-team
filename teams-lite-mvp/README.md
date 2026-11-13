@@ -173,7 +173,8 @@ This builds the executable and then `dist/installer/TeamsLite-Setup-<version>.ex
 - Installs per user, without admin rights, to `%LOCALAPPDATA%\Programs\TeamsLite`, with a Start menu entry and a desktop shortcut (checked by default).
 - Downloads the Parakeet model (~2.4 GB, pinned Hugging Face revision, SHA-256 verified) to `%LOCALAPPDATA%\TeamsLite\models\parakeet-v3`. Files already present with the right hash are not downloaded again. Installation needs internet access for this step.
 - Writes `config.json` next to `TeamsLite.exe` with absolute paths: meetings in `%LOCALAPPDATA%\TeamsLite\data` and the model folder above. `tesseract_cmd` stays `null`, so the app finds Tesseract even when it is installed later. An existing `config.json` is kept on upgrade.
-- Optionally installs Tesseract OCR through winget (asks for admin rights). The option is hidden when Tesseract is already installed.
+- Installs Tesseract OCR 5.4 by default (official UB-Mannheim build, downloaded from GitHub and SHA-256 verified; Windows asks for admin rights). The option is hidden when Tesseract is already installed; if the download or the permission fails, installation continues without it.
+- Shows an "Instalando componentes" page with each component's status (Pendiente, Comprobando, Descargando with percentage, size and remaining time, Verificando, Instalando, Listo, Ya instalado, Omitido) and a total progress bar. A `/SILENT` or `/VERYSILENT` install hides this page.
 - Shows "Comprobando el modelo..." while it checks an existing model, which takes a few seconds; if the download fails it stays on the last page so you can retry, and a `/VERYSILENT` install records the reason in its `/LOG` file.
 - Never ships the build machine's `config.json` (it holds that PC's absolute paths).
 
