@@ -54,6 +54,25 @@ class TranscriptionTests(unittest.TestCase):
             self.assertAlmostEqual(12.5, segments[0].start, delta=0.01)  # 10 + 3 - 0.5 padding
             self.assertAlmostEqual(15.5, segments[0].end, delta=0.01)
 
+    def test_progress_grows_with_the_audio_processed_and_ends_at_one(self):
+        for skip_silence in (False, True):
+            with self.subTest(skip_silence=skip_silence), tempfile.TemporaryDirectory() as tmp:
+                first, second = Path(tmp) / 'mic.wav', Path(tmp) / 'remote.wav'
+                self._write_wav(first, [(2, 0.3), (2, 0.0), (2, 0.3)])
+                self._write_wav(second, [(6, 0.3)])
+                reported = []
+                transcribe_recordings(
+                    [AudioSource(first, 'local', 0), AudioSource(second, 'remote', 0)],
+                    recognizer=lambda path: 'hola', chunk_seconds=1, skip_silence=skip_silence,
+                    progress=reported.append,
+                )
+                self.assertGreater(len(reported), 2)
+                self.assertEqual(reported, sorted(reported))
+                self.assertTrue(all(0 < value <= 1 for value in reported))
+                self.assertEqual(1.0, reported[-1])
+                # The first track is half of the audio: progress passes 0.5 only on the second one.
+                self.assertTrue(any(0.4 <= value <= 0.5 for value in reported), reported)
+
     def test_skip_silence_never_calls_the_model_for_a_silent_track(self):
         with tempfile.TemporaryDirectory() as tmp:
             wav = Path(tmp) / 'audio.wav'

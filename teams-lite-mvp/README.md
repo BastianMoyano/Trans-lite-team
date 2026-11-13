@@ -12,6 +12,8 @@ It does not use Node, Electron, a GPU, or private Microsoft Teams APIs.
 - 30-second WAV segments by default, with raw `.pcm.part` recovery after interruption.
 - SQLite meetings, streams, segments, timestamps, statuses, and error events.
 - Automatic post-recording transcription pipeline with CPU-only ONNX provider selection.
+- Transcription progress on the meeting's card in "Grabaciones recientes" ("Transcribiendo 45 %" plus a progress bar), measured by the share of audio already processed.
+- Update notice: on startup the app asks GitHub for the latest release and, when it is newer, offers to download its installer.
 - Timestamped JSON and plain-text transcript export.
 - Conservative labels: microphone is `Local`; loopback is `Remote/Unknown`.
 - Optional screenshot plus Tesseract OCR name hints.
@@ -179,6 +181,12 @@ This builds the executable and then `dist/installer/TeamsLite-Setup-<version>.ex
 - Never ships the build machine's `config.json` (it holds that PC's absolute paths).
 
 Uninstalling removes the program and the Parakeet model it downloaded (other folders in `%LOCALAPPDATA%\TeamsLite\models` stay); recorded meetings in `%LOCALAPPDATA%\TeamsLite\data` are kept. Meeting minutes still need the `claude` or `codex` CLI installed and signed in by each user; the installer does not bundle them.
+
+### Updates
+
+When Teams Lite opens, it asks `https://api.github.com/repos/BastianMoyano/Trans-lite-team/releases/latest` for the latest release, in the background and with a 5-second timeout. The request carries no meeting data, only a generic `TeamsLite-update-check` user agent. If the tag (for example `v0.2.0`) is newer than the running version, a banner offers **Descargar actualización**, which opens the release's `TeamsLite-Setup-<version>.exe` in the browser, and **Ahora no**. Offline, rate-limited or unexpected answers show nothing. Close Teams Lite before running the new installer; it upgrades in place and keeps meetings, `config.json` and the model.
+
+To publish an update, raise `version` in `pyproject.toml` and `__version__` in `src/teams_lite/__init__.py` (a test keeps them equal), run `.uild_windows.ps1 -Installer`, and attach `dist/installer/TeamsLite-Setup-<version>.exe` to a GitHub release tagged `v<version>`.
 
 ### Using the app
 

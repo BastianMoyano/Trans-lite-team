@@ -108,15 +108,29 @@ def transcribe_recordings(
     inputs: Iterable[AudioSource], *, model_dir: str | Path | None = None,
     recognizer: Callable[[str], str] | None = None, chunk_seconds: float = 20,
     speaker_mapping: Mapping[str, str] | None = None, skip_silence: bool = False,
+    progress: Callable[[float], None] | None = None,
 ) -> list[TranscriptSegment]:
     """Transcribe each source in chunks of at most chunk_seconds.
 
     With skip_silence, only the stretches with sound reach the model. In real meetings each
     track is 40-80 % silence (the other side is talking), so this is the main speed-up.
+    progress, when given, receives the share of audio already processed (0..1, ending at 1.0).
     """
     if not math.isfinite(chunk_seconds) or not 0 < chunk_seconds <= 30:
         raise ValueError('chunk_seconds debe ser mayor que cero y no superar 30')
+    inputs = list(inputs)
     recognize = recognizer if recognizer is not None else load_recognizer(model_dir)
+    total_frames = 0
+    if progress is not None:
+        for item in inputs:
+            with wave.open(str(item.path), 'rb') as source:
+                total_frames += source.getnframes()
+    frames_before = 0
+
+    def report(frames_in_source: int) -> None:
+        if progress is not None and total_frames:
+            progress(min(1.0, (frames_before + frames_in_source) / total_frames))
+
     segments = []
     with tempfile.TemporaryDirectory(prefix='teams-lite-asr-') as temp:
         chunk_path = Path(temp) / 'chunk.wav'
@@ -127,9 +141,12 @@ def transcribe_recordings(
                 if source.getcomptype() != 'NONE':
                     raise ValueError('Solo se admiten archivos WAV PCM sin compresión')
                 rate = source.getframerate()
+                source_frames = source.getnframes()
                 if skip_silence:
                     _transcribe_speech(source, item, rate, chunk_seconds, chunk_path, recognize,
-                                       speaker_mapping, segments)
+                                       speaker_mapping, segments, report)
+                    report(source_frames)
+                    frames_before += source_frames
                     continue
                 frames_per_chunk = max(1, int(rate * chunk_seconds))
                 position = 0
@@ -154,10 +171,13 @@ def transcribe_recordings(
                             item.source, speaker_for_source(item.source, speaker_mapping), text,
                         ))
                     position += count
+                    report(position)
+                frames_before += source_frames
     return sorted(segments, key=lambda s: (s.start, s.end, s.source, s.text))
 
 
-def _transcribe_speech(source, item, rate, chunk_seconds, chunk_path, recognize, speaker_mapping, segments):
+def _transcribe_speech(source, item, rate, chunk_seconds, chunk_path, recognize, speaker_mapping, segments,
+                       report=lambda frames: None):
     import numpy as np
 
     channels, width = source.getnchannels(), source.getsampwidth()
@@ -182,6 +202,7 @@ def _transcribe_speech(source, item, rate, chunk_seconds, chunk_path, recognize,
                 round(item.offset_seconds + end / rate, 6),
                 item.source, speaker_for_source(item.source, speaker_mapping), text,
             ))
+        report(end)
 
 
 def _timestamp(seconds: float) -> str:

@@ -11,11 +11,12 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
-from teams_lite.app import MainWindow
+from teams_lite.app import _MEETING_ROLE, MainWindow
 from teams_lite.config import AppConfig
 from teams_lite.moments import load_moments
 from teams_lite.ocr import load_participants, merge_participants
 from teams_lite.storage import Storage
+from teams_lite.updates import UpdateInfo
 from teams_lite.window_capture import TeamsWindowMinimized
 
 
@@ -588,6 +589,102 @@ class TranscriptionSpeedTests(unittest.TestCase):
                 self.assertTrue(transcribe.call_args.kwargs['skip_silence'])
             finally:
                 window.close()
+
+
+class TranscriptionProgressUiTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.application = QApplication.instance() or QApplication([])
+
+    def _card(self, window, meeting_id):
+        for row in range(window.table.rowCount()):
+            item = window.table.item(row, 0)
+            if item.data(Qt.ItemDataRole.UserRole) == meeting_id:
+                return item.data(_MEETING_ROLE)
+        raise AssertionError(f"no card for {meeting_id}")
+
+    def test_card_shows_transcription_progress_until_it_finishes(self):
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            meeting_id = storage.create_meeting('Progreso')
+            storage.finish_meeting(meeting_id)
+            window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False))
+            window.timer.stop()
+            window.store.list_segments = lambda _id: [
+                {'path': 'mic.wav', 'kind': 'microphone', 'started_monotonic': 1.0, 'status': 'finalized'},
+            ]
+            seen = []
+
+            def transcribe(sources, **kwargs):
+                kwargs['progress'](0.25)
+                kwargs['progress'](0.251)  # same whole percent: no extra repaint
+                kwargs['progress'](0.5)
+                seen.append(self._card(window, meeting_id)['transcription_progress'])
+                return []
+
+            try:
+                with mock.patch('teams_lite.app.transcribe_recordings', side_effect=transcribe), \
+                        mock.patch('teams_lite.app.export_transcript'):
+                    window._transcribe_meeting(meeting_id)
+                self.assertEqual([0.5], seen)
+                self.assertIsNone(self._card(window, meeting_id).get('transcription_progress'))
+            finally:
+                window.close()
+
+    def test_failed_transcription_clears_the_progress(self):
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            meeting_id = storage.create_meeting('Falla')
+            storage.finish_meeting(meeting_id)
+            window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False))
+            window.timer.stop()
+            window.store.list_segments = lambda _id: [
+                {'path': 'mic.wav', 'kind': 'microphone', 'started_monotonic': 1.0, 'status': 'finalized'},
+            ]
+
+            def transcribe(sources, **kwargs):
+                kwargs['progress'](0.3)
+                raise RuntimeError('modelo roto')
+
+            try:
+                with mock.patch('teams_lite.app.transcribe_recordings', side_effect=transcribe), \
+                        mock.patch.object(window, '_show_error'):
+                    window._transcribe_meeting(meeting_id)
+                self.assertIsNone(self._card(window, meeting_id).get('transcription_progress'))
+            finally:
+                window.close()
+
+
+class UpdateBannerUiTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.application = QApplication.instance() or QApplication([])
+
+    def test_banner_offers_the_new_version_and_downloads_the_installer(self):
+        with tempfile.TemporaryDirectory() as d:
+            window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False))
+            window.timer.stop()
+            try:
+                self.assertTrue(window.update_banner.isHidden())
+                window.show_update(UpdateInfo('0.2.0', 'https://example/page', 'https://example/setup.exe'))
+                self.assertFalse(window.update_banner.isHidden())
+                self.assertIn('0.2.0', window.update_text.text())
+                with mock.patch('teams_lite.app.QDesktopServices.openUrl') as open_url:
+                    window.update_button.click()
+                self.assertEqual('https://example/setup.exe', open_url.call_args.args[0].toString())
+                window.update_dismiss_button.click()
+                self.assertTrue(window.update_banner.isHidden())
+            finally:
+                window.close()
+
+    def test_creating_the_window_never_checks_for_updates(self):
+        # Only main() checks, so tests and other embedders never reach the network.
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch('teams_lite.app.check_for_update') as check:
+            window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False))
+            window.timer.stop()
+            window.close()
+        check.assert_not_called()
 
 
 class AudioWarningUiTests(unittest.TestCase):

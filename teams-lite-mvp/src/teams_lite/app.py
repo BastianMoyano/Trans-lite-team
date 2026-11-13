@@ -50,6 +50,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from . import __version__
 from .audio import Recorder
 from .config import AppConfig, default_config_path, load_config
 from .hotkey import (
@@ -64,6 +65,7 @@ from .moments import capture_moment, format_offset, load_moments, moments_for_mi
 from .ocr import load_participants, merge_participants, read_teams_names
 from .storage import Storage
 from .transcription import AudioSource, CapabilityError, export_transcript, transcribe_recordings
+from .updates import UpdateInfo, check_for_update
 from .visual_speakers import append_observation, apply_visual_speakers, load_observations
 from .wevisone import VisualModelUnavailable, WeVisOneDetector, visual_model_problem
 from .window_capture import FrameSampler, TeamsWindowUnavailable, capture_teams_frame
@@ -129,6 +131,15 @@ QFrame#noticeCard {
 }
 QLabel#noticeText {
     color: #D9CBB4;
+    font-size: 13px;
+}
+QFrame#updateCard {
+    background: #13233A;
+    border: 1px solid #24426B;
+    border-radius: 8px;
+}
+QLabel#updateText {
+    color: #CFE0F5;
     font-size: 13px;
 }
 QFrame#card {
@@ -637,6 +648,9 @@ class AppSignals(QObject):
     minutes_ready = Signal(str)
     minutes_failed = Signal(str, str)
     moment_marked = Signal(object)
+    transcription_progress = Signal(str, float)
+    transcription_finished = Signal(str)
+    update_available = Signal(object)
 
 
 _MEETING_ROLE = Qt.ItemDataRole.UserRole + 1
@@ -645,6 +659,7 @@ _BADGE_COLORS = {
     "recording": ("#3A1717", "#F87171"),
     "interrupted": ("#3A2C12", "#F5B544"),
 }
+_PROGRESS_COLORS = ("#14283D", "#60A5FA")
 
 
 class MeetingDelegate(QStyledItemDelegate):
@@ -686,7 +701,11 @@ class MeetingDelegate(QStyledItemDelegate):
 
         left, top = rect.left() + 14, rect.top() + 12
         status = str(meeting["status"])
-        badge_text = _STATUS_LABELS.get(status, status)
+        progress = meeting.get("transcription_progress")
+        badge_text = (
+            f"Transcribiendo {int(progress * 100)} %" if progress is not None
+            else _STATUS_LABELS.get(status, status)
+        )
         badge_metrics = QFontMetrics(self.meta_font)
         badge_width = badge_metrics.horizontalAdvance(badge_text) + 16
         title_metrics = QFontMetrics(self.title_font)
@@ -698,7 +717,10 @@ class MeetingDelegate(QStyledItemDelegate):
         painter.drawText(left, top + title_metrics.ascent() + 2, title)
 
         badge = QRect(left + title_metrics.horizontalAdvance(title) + 8, top, badge_width, 22)
-        background, foreground = _BADGE_COLORS.get(status, ("#232323", COLORS["text_muted"]))
+        background, foreground = (
+            _PROGRESS_COLORS if progress is not None
+            else _BADGE_COLORS.get(status, ("#232323", COLORS["text_muted"]))
+        )
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor(background))
         painter.drawRoundedRect(badge, 4, 4)
@@ -710,6 +732,13 @@ class MeetingDelegate(QStyledItemDelegate):
         painter.drawText(left, top + 46, format_meeting_date(meeting["started_utc"]))
         painter.setFont(self.mono_font)
         painter.drawText(left, top + 74, short_id(str(meeting["id"])))
+        if progress is not None:
+            track = QRect(left, rect.bottom() - 9, max(0, rect.width() - 28), 4)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(COLORS["border"]))
+            painter.drawRoundedRect(track, 2, 2)
+            painter.setBrush(QColor(_PROGRESS_COLORS[1]))
+            painter.drawRoundedRect(QRect(track.left(), track.top(), int(track.width() * progress), 4), 2, 2)
         painter.restore()
 
 
@@ -736,6 +765,8 @@ class MainWindow(QMainWindow):
         self._audio_warnings_shown = 0
         self._hotkey_registered = False
         self._ocr_window_warned = False
+        self._transcription_progress: dict[str, float] = {}
+        self._update: UpdateInfo | None = None
         self.signals = AppSignals()
         self.signals.status.connect(self._set_status)
         self.signals.recording_stopped.connect(self._after_stop)
@@ -746,6 +777,9 @@ class MainWindow(QMainWindow):
         self.signals.minutes_failed.connect(self._minutes_failed)
         self.signals.moment_marked.connect(self._moment_done)
         self.signals.visual_warning.connect(lambda message: self._set_status(message, tone="warning"))
+        self.signals.transcription_progress.connect(self._on_transcription_progress)
+        self.signals.transcription_finished.connect(self._on_transcription_finished)
+        self.signals.update_available.connect(self.show_update)
         self.setWindowTitle("Teams Lite")
         self.resize(1000, 780)
         self.setMinimumSize(820, 600)
@@ -769,6 +803,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(40, 28, 40, 28)
         layout.setSpacing(18)
         layout.addLayout(self._build_header())
+        layout.addWidget(self._build_update_banner())
         layout.addWidget(self._build_notice())
         columns = QHBoxLayout()
         columns.setSpacing(16)
@@ -821,6 +856,53 @@ class MainWindow(QMainWindow):
         self.state_pill.setTextFormat(Qt.TextFormat.RichText)
         header.addWidget(self.state_pill, 0, Qt.AlignmentFlag.AlignTop)
         return header
+
+    def _build_update_banner(self) -> QFrame:
+        self.update_banner = QFrame()
+        self.update_banner.setObjectName("updateCard")
+        banner_layout = QHBoxLayout(self.update_banner)
+        banner_layout.setContentsMargins(16, 10, 12, 10)
+        banner_layout.setSpacing(12)
+        banner_layout.addWidget(_icon_label("info", "#60A5FA"), 0, Qt.AlignmentFlag.AlignVCenter)
+        self.update_text = QLabel()
+        self.update_text.setObjectName("updateText")
+        self.update_text.setTextFormat(Qt.TextFormat.RichText)
+        self.update_text.setWordWrap(True)
+        banner_layout.addWidget(self.update_text, 1)
+        self.update_button = QPushButton("Descargar actualización")
+        self.update_button.setObjectName("primaryButton")
+        set_button_icon(self.update_button, "download", "#0B0B0B", gap=6)
+        self.update_dismiss_button = QPushButton("Ahora no")
+        self.update_dismiss_button.setObjectName("ghostButton")
+        banner_layout.addWidget(self.update_button)
+        banner_layout.addWidget(self.update_dismiss_button)
+        self.update_button.clicked.connect(self._open_update)
+        self.update_dismiss_button.clicked.connect(self.update_banner.hide)
+        self.update_banner.hide()
+        return self.update_banner
+
+    def check_for_updates_async(self) -> None:
+        """Ask GitHub for a newer release off the UI thread; silent when offline."""
+        def work() -> None:
+            info = check_for_update(__version__)
+            if info is not None:
+                self.signals.update_available.emit(info)
+
+        threading.Thread(target=work, name="update-check", daemon=True).start()
+
+    def show_update(self, info: UpdateInfo) -> None:
+        self._update = info
+        self.update_text.setText(
+            f"<b style='color:#EAF2FC'>Hay una nueva versión de Teams Lite: {info.version}.</b> "
+            f"Tienes la {__version__}. El instalador actualiza encima y conserva tus reuniones, "
+            "la configuración y el modelo."
+        )
+        self.update_banner.show()
+
+    def _open_update(self) -> None:
+        if self._update is not None:
+            QDesktopServices.openUrl(QUrl(self._update.installer_url or self._update.page_url))
+            self._set_status("Descargando el instalador en el navegador. Cierra Teams Lite antes de ejecutarlo.")
 
     def _build_notice(self) -> QFrame:
         notice_card = QFrame()
@@ -1246,6 +1328,22 @@ class MainWindow(QMainWindow):
         ).start()
 
     def _transcribe_meeting(self, meeting_id: str) -> None:
+        last_percent = -1
+
+        def progress(fraction: float) -> None:
+            # Runs on the transcription thread: one signal per whole percent, not per chunk.
+            nonlocal last_percent
+            percent = int(fraction * 100)
+            if percent != last_percent:
+                last_percent = percent
+                self.signals.transcription_progress.emit(meeting_id, fraction)
+
+        try:
+            self._transcribe_meeting_now(meeting_id, progress)
+        finally:
+            self.signals.transcription_finished.emit(meeting_id)
+
+    def _transcribe_meeting_now(self, meeting_id: str, progress) -> None:
         try:
             rows = [
                 row for row in self.store.list_segments(meeting_id)
@@ -1267,6 +1365,7 @@ class MainWindow(QMainWindow):
                 model_dir=self.config.parakeet_model_dir,
                 chunk_seconds=20,
                 skip_silence=True,  # each track is mostly silence while the other side talks
+                progress=progress,
             )
             meeting_dir = Path(self.config.data_dir) / meeting_id
             observations = load_observations(meeting_dir / "speaker-observations.jsonl")
@@ -1395,7 +1494,9 @@ class MainWindow(QMainWindow):
                 item = QTableWidgetItem("" if column == 0 else str(value))
                 if column == 0:
                     item.setData(Qt.ItemDataRole.UserRole, meeting["id"])
-                    item.setData(_MEETING_ROLE, dict(meeting))
+                    item.setData(_MEETING_ROLE, dict(
+                        meeting, transcription_progress=self._transcription_progress.get(meeting["id"])
+                    ))
                     item.setToolTip(str(meeting["id"]))
                 if column == 2:
                     item.setData(Qt.ItemDataRole.UserRole, meeting["status"])
@@ -1761,6 +1862,23 @@ class MainWindow(QMainWindow):
             self.state_pill.setProperty("tone", tone)
             _repolish(self.state_pill)
 
+    def _set_card_progress(self, meeting_id: str, fraction: float | None) -> None:
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            if item is not None and item.data(Qt.ItemDataRole.UserRole) == meeting_id:
+                item.setData(_MEETING_ROLE, dict(item.data(_MEETING_ROLE), transcription_progress=fraction))
+                self.table.viewport().update()
+                return
+
+    def _on_transcription_progress(self, meeting_id: str, fraction: float) -> None:
+        self._transcription_progress[meeting_id] = fraction
+        self._set_card_progress(meeting_id, fraction)
+        self._set_status(f"Transcribiendo mediante CPU… {int(fraction * 100)} %")
+
+    def _on_transcription_finished(self, meeting_id: str) -> None:
+        self._transcription_progress.pop(meeting_id, None)
+        self._set_card_progress(meeting_id, None)
+
     def _transcript_done(self, path: str) -> None:
         self._busy = False
         self._set_status(f"Transcripción guardada · {path}", tone="success")
@@ -1802,6 +1920,7 @@ def main(argv: list[str] | None = None) -> int:
     application.setFont(QFont("Segoe UI", 10))
     window = MainWindow(config)
     window.show()
+    window.check_for_updates_async()
     return application.exec()
 
 
