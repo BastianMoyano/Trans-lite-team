@@ -13,7 +13,7 @@ Branch: codex/active-speaker-tracking · Delivery: ask-on-risk · Test runner: `
 - T1 [S1] inline — commit pending work in work units — done (9115b01, 2335096, 481f11e)
 - T2 [S2-S5] inline — Inno Setup script + build integration + README — done, packaging tests GREEN (RED observed: 5 failing)
 - T3 [S2-S5] inline — build the setup and verify install/shortcut/config on this PC — done (silent install, download of 3 files with hashes, config, desktop + Start menu shortcuts, exe --help, model load, uninstall keeps data)
-- T4 [S1] inline — add remote and push — user accepted public repo provided no recordings are published
+- T4 [S1] inline — add remote and push — done: pushed to origin/main (7b8884f), 0 media files on remote
 
 ## Log
 - L1 (2026-11-13): "a este repo debemos subir todo y crear un instalador, ponga todas sus dependencia y quedeje configurado todo y la app acceso directo desde el escritorio" + "https://github.com/BastianMoyano/Trans-lite-team.git"
@@ -22,3 +22,4 @@ Branch: codex/active-speaker-tracking · Delivery: ask-on-risk · Test runner: `
 - L4 (2026-11-13): "lo cerre, si quieres lo cierras a la fuerza" — app closed. dist\ under OneDrive was still locked -> PyInstaller dist and work moved to %LOCALAPPDATA%\TeamsLite-build.
 - L5 (2026-11-13): "que codigo de empresa tienen ? no subar las transcripciones que se han realizado o videos o audios, eso debes ignorarlo y cuando se grabe por primera vez se crea al carpeta" — verified no recordings are tracked; added explicit ignore rules for audio/video/transcripts/minutes; removed installer [Dirs] data folder (the app creates it); removed unrequested AppPublisher line.
 - L6: Inno preprocessor treats a line starting with '#' as a directive -> moved #13#10 to the previous line. Verification evidence: setup exit 0; only config.json, vocab.txt, encoder-model.onnx downloaded; all 5 SHA-256 match; exe --help exit 0; onnx_asr loads installed model; uninstall exit 0 removes app, models and shortcut, keeps data. Suite 113/113 OK.
+- L7: Independent verifier on 7b8884f: S2-S5 pass, no blockers. Advisories (follow-up): tesseract_cmd not set when Tesseract is added on a later re-run; tesseract path written even if winget fails; uninstall deletes the whole models folder; 2.4 GB hash check freezes the Ready page a few seconds and offline silent install exits; move-failure message says "descargar".
