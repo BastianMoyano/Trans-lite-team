@@ -8,3 +8,20 @@ data/
 config.json
 models/
 
+
+# Never publish recordings, screenshots or meeting content, wherever they end up.
+*.wav
+*.raw
+*.pcm
+*.mp3
+*.m4a
+*.mp4
+*.webm
+*.mkv
+*.sqlite3
+transcript.json
+transcript.txt
+minutes.md
+participants.json
+speaker-observations.jsonl
+moments.jsonl
