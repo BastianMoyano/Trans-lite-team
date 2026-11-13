@@ -70,6 +70,9 @@ class InstallerTests(unittest.TestCase):
     def test_tesseract_is_installed_by_default_from_a_pinned_verified_download(self):
         task = re.search(r'(?m)^Name: "tesseract";.*$', self.script)[0]
         self.assertNotIn("unchecked", task)
+        # Upgrades from 0.1.0 remembered the task unchecked; the new default must win.
+        self.assertIn("dontinheritcheck", task)
+        self.assertIn("descarga detenida", self.script)
         self.assertIn(
             "https://github.com/UB-Mannheim/tesseract/releases/download/v5.4.0.20240606/"
             "tesseract-ocr-w64-setup-5.4.0.20240606.exe",

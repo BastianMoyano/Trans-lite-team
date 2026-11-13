@@ -45,7 +45,7 @@ Name: "es"; MessagesFile: "compiler:Languages\Spanish.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "Crear un acceso directo en el escritorio"; GroupDescription: "Accesos directos:"
-Name: "tesseract"; Description: "Instalar Tesseract OCR 5.4 para leer los nombres de los asistentes (descarga 48 MB; Windows pedirá permiso de administrador)"; GroupDescription: "Componentes:"; Check: not TesseractInstalled
+Name: "tesseract"; Description: "Instalar Tesseract OCR 5.4 para leer los nombres de los asistentes (descarga 48 MB; Windows pedirá permiso de administrador)"; GroupDescription: "Componentes:"; Flags: dontinheritcheck; Check: not TesseractInstalled
 
 [InstallDelete]
 ; Drop libraries of the previous version before copying the new bundle.
@@ -175,7 +175,10 @@ begin
     CurrentFileSize := 0;
   end;
   if ProgressMax > 0 then
-    CurrentFileSize := ProgressMax;
+    CurrentFileSize := ProgressMax
+  else if Progress > CurrentFileSize then
+    // No Content-Length: count what arrived, so the total never steps back on the next file.
+    CurrentFileSize := Progress;
   Done := DoneBytes + Progress;
   ComponentDone := Done - ComponentBase;
   if (CurrentStatus <> nil) and (ComponentTotal > 0) then
@@ -314,7 +317,11 @@ begin
   except
     Log('Tesseract download failed: ' + GetExceptionMessage);
     EndComponent;
-    SetStatus(TesseractStatus, 'Omitido: no se pudo descargar (puedes instalarlo después)', clMaroon);
+    // Stopping this optional download skips only Tesseract; Teams Lite still installs.
+    if DownloadPage.AbortedByUser then
+      SetStatus(TesseractStatus, 'Omitido: descarga detenida (puedes instalarlo después)', clMaroon)
+    else
+      SetStatus(TesseractStatus, 'Omitido: no se pudo descargar (puedes instalarlo después)', clMaroon);
     Exit;
   end;
   EndComponent;
@@ -379,7 +386,13 @@ begin
 
       InstallModelFiles(Pending, PendingBytes);
       if WantTesseract then
-        InstallTesseract;
+        try
+          InstallTesseract;
+        except
+          // Never report a Tesseract problem as a model failure, and never block on it.
+          Log('Tesseract installation failed: ' + GetExceptionMessage);
+          SetStatus(TesseractStatus, 'Omitido: error inesperado (puedes instalarlo después)', clMaroon);
+        end;
       TotalBar.Position := TotalBar.Max;
       DownloadPage.SetText('Componentes listos.', 'A continuación se instala Teams Lite.');
       if not WizardSilent then

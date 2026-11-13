@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+import http.client
 import json
 import re
 import urllib.request
@@ -53,5 +54,6 @@ def check_for_update(current: str, fetch: Callable[[], dict] = fetch_latest_rele
             None,
         )
         return UpdateInfo(".".join(map(str, latest)), str(release.get("html_url", "")), installer)
-    except (OSError, ValueError, AttributeError, KeyError, TypeError):
+    except (OSError, http.client.HTTPException, ValueError, AttributeError, KeyError, TypeError):
+        # HTTPException covers answers cut short (IncompleteRead), which are not OSError.
         return None

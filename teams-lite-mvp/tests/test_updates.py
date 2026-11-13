@@ -1,3 +1,4 @@
+import http.client
 import json
 import unittest
 from pathlib import Path
@@ -48,7 +49,11 @@ class UpdateCheckTests(unittest.TestCase):
         def bad_json():
             raise json.JSONDecodeError("bad", "", 0)
 
-        for fetch in (offline, bad_json, lambda: {}, lambda: release("nightly"), lambda: release("v0.2.0-rc1")):
+        def cut_short():
+            raise http.client.IncompleteRead(b"{")
+
+        for fetch in (offline, bad_json, cut_short, lambda: {}, lambda: release("nightly"),
+                      lambda: release("v0.2.0-rc1")):
             with self.subTest(fetch=fetch):
                 self.assertIsNone(check_for_update("0.1.0", fetch=fetch))
 
