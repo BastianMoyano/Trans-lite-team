@@ -14,6 +14,7 @@ for package in (
     "huggingface_hub",
     "onnx_asr",
     "onnxruntime",
+    "pytesseract",  # imported lazily by ocr.py: the analysis alone misses it
     "soundcard",
 ):
     try:

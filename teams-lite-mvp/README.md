@@ -27,7 +27,7 @@ It does not use Node, Electron, a GPU, or private Microsoft Teams APIs.
 - Timestamp drift between independent microphone and loopback devices.
 - Active-speaker border and name recognition across Teams layouts, display scales, languages, and themes.
 - WeVisOne-VL 2B latency and memory use on the target machine's CPU-only runtime.
-- A packaged installer and code signing.
+- Code signing: the installer and executable are unsigned, so Windows SmartScreen warns on first run.
 
 The application does not identify a person from their voice. When enabled, it uses Teams' visible active-speaker border and participant label as time-bounded evidence. Missing, weak, or conflicting visual evidence remains `Remoto/Desconocido`.
 
@@ -158,7 +158,27 @@ pip install -e ".[asr,ocr,vision,build]"
 .\build_windows.ps1
 ```
 
-The executable is created at `dist/TeamsLite/TeamsLite.exe`. The build writes absolute local paths for `data_dir` and the model folders into the generated `dist/TeamsLite/config.json`; model weights are not duplicated inside the executable folder. Recordings stay in the project `data` folder because PyInstaller wipes `dist/TeamsLite` on every rebuild; the build refuses a `data_dir` inside `dist`. Without `--config`, the executable reads the `config.json` next to `TeamsLite.exe`, regardless of the shortcut's start folder.
+The executable is created at `%LOCALAPPDATA%\TeamsLite-build\dist\TeamsLite\TeamsLite.exe`, outside the project: when the project sits in OneDrive, its sync locks folders, PyInstaller cannot wipe the previous build (WinError 5), and every build would be uploaded. The build writes absolute local paths for `data_dir` and the model folders into the generated `config.json` next to the executable; model weights are not duplicated inside the executable folder. Recordings stay in the project `data` folder because PyInstaller wipes the output folder on every rebuild; the build refuses a `data_dir` inside it. Without `--config`, the executable reads the `config.json` next to `TeamsLite.exe`, regardless of the shortcut's start folder.
+
+### Build the installer
+
+Install [Inno Setup 6](https://jrsoftware.org/isinfo.php) (`winget install -e --id JRSoftware.InnoSetup`), then:
+
+```powershell
+.\build_windows.ps1 -Installer
+```
+
+This builds the executable and then `dist/installer/TeamsLite-Setup-<version>.exe` from `installer/TeamsLite.iss`. The version comes from `pyproject.toml`. The setup:
+
+- Installs per user, without admin rights, to `%LOCALAPPDATA%\Programs\TeamsLite`, with a Start menu entry and a desktop shortcut (checked by default).
+- Downloads the Parakeet model (~2.4 GB, pinned Hugging Face revision, SHA-256 verified) to `%LOCALAPPDATA%\TeamsLite\models\parakeet-v3`. Files already present with the right hash are not downloaded again. Installation needs internet access for this step.
+- Writes `config.json` next to `TeamsLite.exe` with absolute paths: meetings in `%LOCALAPPDATA%\TeamsLite\data`, the model folder above, and Tesseract when it is installed. An existing `config.json` is kept on upgrade.
+- Optionally installs Tesseract OCR through winget (asks for admin rights).
+- Never ships the build machine's `config.json` (it holds that PC's absolute paths).
+
+Uninstalling removes the program and the downloaded model; recorded meetings in `%LOCALAPPDATA%\TeamsLite\data` are kept. Meeting minutes still need the `claude` or `codex` CLI installed and signed in by each user; the installer does not bundle them.
+
+### Using the app
 
 1. Confirm the Windows default input/output devices match the devices Teams uses.
 2. Notify participants and obtain any required consent.
