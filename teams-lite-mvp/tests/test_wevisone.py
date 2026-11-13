@@ -10,6 +10,7 @@ from teams_lite.wevisone import (
     VisualModelUnavailable,
     parse_grounded_text,
     parse_single_box,
+    visual_model_problem,
 )
 from teams_lite.window_capture import CapturedFrame
 
@@ -53,6 +54,24 @@ class WeVisOneTests(unittest.TestCase):
         self.assertEqual(["referring", "ocr"], [call[1] for call in model.calls])
         self.assertEqual((800, 640), model.calls[1][0])
 
+    def test_joins_words_the_real_model_returns_separately(self):
+        # Shape observed from WeVisOne-VL-2B on CPU: one <ref> per word, in any order.
+        # An upper caption line must not be merged into the bottom name label.
+        ocr = (
+            "<ref>Perez</ref><box><249><781><492><916></box>, "
+            "<ref>Presentando</ref><box><44><560><400><690></box>, "
+            "<ref>Ana</ref><box><44><783><216><917></box>"
+        )
+        model = FakeModel("<ref>active speaker</ref><box><100><100><900><900></box>", ocr)
+        with tempfile.TemporaryDirectory() as temp:
+            image_path = Path(temp) / "frame.png"
+            Image.new("RGB", (1000, 800), "white").save(image_path)
+            frame = CapturedFrame(image_path, 3.0, "2026-11-12T14:32:05+00:00", 2)
+
+            observation = WeVisOneDetector(model=model).detect(frame)
+
+        self.assertEqual("Ana Perez", observation.speaker)
+
     def test_ambiguous_tile_or_missing_name_fails_closed(self):
         ambiguous = FakeModel(
             "<box><0><0><500><500></box>, <box><500><0><1000><500></box>",
@@ -70,6 +89,35 @@ class WeVisOneTests(unittest.TestCase):
 
         with self.assertRaisesRegex(VisualModelUnavailable, "WeVisOne-VL"):
             WeVisOneDetector(model_loader=missing_loader).load()
+
+    def test_model_problem_reports_missing_directory(self):
+        with tempfile.TemporaryDirectory() as temp:
+            missing = Path(temp) / "nope"
+            self.assertIn("No existe", visual_model_problem(missing))
+        self.assertIn("wevisone_model_dir", visual_model_problem(None))
+
+    def test_model_problem_reports_missing_weights(self):
+        # Mirrors an interrupted `hf download`: config present, model.safetensors absent.
+        with tempfile.TemporaryDirectory() as temp:
+            (Path(temp) / "config.json").write_text("{}", encoding="utf-8")
+            problem = visual_model_problem(temp)
+            self.assertIn("model.safetensors", problem)
+            self.assertIn("incompleta", problem)
+
+    def test_model_problem_accepts_single_or_sharded_weights(self):
+        for weights in ("model.safetensors", "model.safetensors.index.json"):
+            with self.subTest(weights=weights), tempfile.TemporaryDirectory() as temp:
+                (Path(temp) / "config.json").write_text("{}", encoding="utf-8")
+                (Path(temp) / weights).write_bytes(b"x")
+                self.assertIsNone(visual_model_problem(temp))
+
+    def test_load_with_missing_weights_explains_the_cause(self):
+        with tempfile.TemporaryDirectory() as temp:
+            (Path(temp) / "config.json").write_text("{}", encoding="utf-8")
+            with self.assertRaises(VisualModelUnavailable) as caught:
+                WeVisOneDetector(model_path=temp).load()
+            self.assertIn("model.safetensors", str(caught.exception))
+            self.assertNotIn("instala", str(caught.exception))
 
 
 if __name__ == "__main__":

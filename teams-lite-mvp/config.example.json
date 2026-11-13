@@ -10,6 +10,7 @@
   "visual_speaker_enabled": false,
   "visual_sample_seconds": 2.0,
   "teams_window_title": "Microsoft Teams",
-  "wevisone_model_dir": "./models/wevisone-vl-2b"
+  "wevisone_model_dir": "./models/wevisone-vl-2b",
+  "minutes_cli": "claude"
 }
 

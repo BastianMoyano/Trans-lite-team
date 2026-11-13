@@ -1,3 +1,5 @@
+import ctypes
+import sys
 import tempfile
 import threading
 import time
@@ -52,6 +54,114 @@ class AudioTests(unittest.TestCase):
             self.assertTrue(recorder.errors)
             self.assertEqual(store.list_meetings()[0]['status'], 'failed')
             self.assertTrue(store.list_events(meeting))
+
+    def test_lost_device_does_not_stop_the_other_stream_and_reconnects(self):
+        # A Bluetooth headset dies mid-meeting: the loopback device is invalidated, then the
+        # new default output is opened. The microphone must never stop recording.
+        opens = {'microphone': 0, 'loopback': 0}
+
+        class DyingSource(FakeSource):
+            def __init__(self):
+                self.calls = 0
+
+            def record(self, numframes):
+                self.calls += 1
+                if self.calls > 3:
+                    raise RuntimeError('AUDCLNT_E_DEVICE_INVALIDATED')
+                return super().record(numframes)
+
+        def factory(kind, rate):
+            opens[kind] += 1
+            return DyingSource() if kind == 'loopback' and opens[kind] == 1 else FakeSource()
+
+        with tempfile.TemporaryDirectory() as d:
+            store = Storage(d)
+            meeting = store.create_meeting()
+            recorder = Recorder(store, meeting, sample_rate=8000, segment_seconds=0.02,
+                                source_factory=factory, retry_seconds=0.01)
+            recorder.start()
+            time.sleep(0.3)
+            recorder.stop()
+
+            self.assertEqual([], recorder.errors)
+            self.assertEqual('completed', store.list_meetings()[0]['status'])
+            self.assertEqual(1, opens['microphone'], recorder.warnings)
+            self.assertEqual(2, opens['loopback'], recorder.warnings)
+            kinds = [event['kind'] for event in store.list_events(meeting)]
+            self.assertIn('capture_interrupted', kinds)
+            self.assertIn('capture_resumed', kinds)
+            self.assertTrue(any('loopback' in warning for warning in recorder.warnings))
+            segments = store.list_segments(meeting)
+            for kind in ('microphone', 'loopback'):
+                sequences = [s['sequence'] for s in segments if s['kind'] == kind]
+                self.assertEqual(len(sequences), len(set(sequences)), f'{kind} reused a sequence number')
+            loopback = sorted(s['started_monotonic'] for s in segments if s['kind'] == 'loopback')
+            microphone = sorted(s['started_monotonic'] for s in segments if s['kind'] == 'microphone')
+            # Timing-independent: the microphone kept producing segments across the whole run,
+            # including after the loopback failed (its last segment starts after loopback's first).
+            self.assertGreaterEqual(len(microphone), 2)
+            self.assertGreater(microphone[-1], loopback[0])
+            self.assertGreater(loopback[-1], loopback[0])  # loopback resumed after the failure
+
+    def test_default_device_change_switches_to_the_new_device(self):
+        # Headphones are plugged in: Windows moves Teams audio to them while the old speakers
+        # still exist, so the old loopback would silently record silence.
+        current = {'microphone': 'built-in-mic', 'loopback': 'speakers'}
+        opened = []
+
+        def factory(kind, rate):
+            opened.append((kind, current[kind]))
+            return FakeSource()
+
+        with tempfile.TemporaryDirectory() as d:
+            store = Storage(d)
+            meeting = store.create_meeting()
+            recorder = Recorder(store, meeting, sample_rate=8000, segment_seconds=0.02,
+                                source_factory=factory, device_id=lambda kind: current[kind],
+                                device_check_seconds=0.01)
+            recorder.start()
+            time.sleep(0.08)
+            current['loopback'] = 'headphones'
+            time.sleep(0.15)
+            recorder.stop()
+
+            self.assertIn(('loopback', 'speakers'), opened)
+            self.assertIn(('loopback', 'headphones'), opened)
+            self.assertEqual(1, sum(1 for kind, _ in opened if kind == 'microphone'))
+            self.assertIn('device_changed', [event['kind'] for event in store.list_events(meeting)])
+            self.assertEqual([], recorder.errors)
+            self.assertEqual('completed', store.list_meetings()[0]['status'])
+
+    @unittest.skipUnless(sys.platform == 'win32', 'COM apartments are Windows specific')
+    def test_capture_threads_initialize_com_themselves(self):
+        # soundcard initializes COM only once, in the thread that imports it. When that first
+        # recording's thread exits, later recordings got CO_E_NOTINITIALIZED (0x800401F0) and
+        # captured nothing. Each capture thread must own an explicit COM initialization.
+        apartments = []
+
+        def apartment_of_current_thread():
+            kind, qualifier = ctypes.c_int(), ctypes.c_int()
+            hr = ctypes.windll.ole32.CoGetApartmentType(ctypes.byref(kind), ctypes.byref(qualifier))
+            return hr & 0xFFFFFFFF, kind.value, qualifier.value
+
+        def factory(kind, rate):
+            apartments.append(apartment_of_current_thread())
+            return FakeSource()
+
+        APTTYPE_MTA, APTTYPEQUALIFIER_IMPLICIT_MTA = 1, 1
+        with tempfile.TemporaryDirectory() as d:
+            store = Storage(d)
+            for _ in range(2):  # a second recording in the same process must behave the same
+                meeting = store.create_meeting()
+                recorder = Recorder(store, meeting, sample_rate=8000, segment_seconds=0.02, source_factory=factory)
+                recorder.start()
+                time.sleep(0.05)
+                recorder.stop()
+        self.assertEqual(4, len(apartments))
+        for hr, kind, qualifier in apartments:
+            self.assertEqual(0, hr, f'COM not initialized in the capture thread (hr=0x{hr:08X})')
+            self.assertEqual(APTTYPE_MTA, kind)
+            self.assertNotEqual(APTTYPEQUALIFIER_IMPLICIT_MTA, qualifier)
 
     def test_startup_metadata_failure_does_not_leak_finalizer(self):
         with tempfile.TemporaryDirectory() as d:

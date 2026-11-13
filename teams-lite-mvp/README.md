@@ -80,7 +80,16 @@ This downloads community ONNX conversion files used by `onnx-asr`; it is not NVI
 
 ### Optional Tesseract
 
-Install Tesseract separately and set `tesseract_cmd` in `config.json` if it is not on `PATH`. Set `ocr_enabled` to `true`. `ocr_region` is either `null` for the whole screen or `[left, top, right, bottom]` for a Teams participant area.
+Install Tesseract separately and set `tesseract_cmd` in `config.json` if it is not on `PATH`. Set `ocr_enabled` to `true` to build an attendee list for the meeting minutes:
+
+- Only the visible Teams window (`teams_window_title`) is read, never the whole screen. If Teams is not visible, nothing is captured.
+- The window is read when recording starts and every 60 seconds; "Capturar asistentes ahora" reads it on demand.
+- Screenshots are deleted right after OCR; only the detected names are kept, in `data/<meeting>/participants.json`.
+- Only text that looks like a display name (2–5 capitalized words, no digits or symbols) is kept; Teams UI labels are ignored.
+- Copiar and Descargar prepend `Asistentes (detectados por OCR): ...` to the transcript.
+- With only the `eng` Tesseract language, accents may be dropped (`Díaz` → `Diaz`). Installing `spa.traineddata` enables `spa+eng` automatically.
+
+`ocr_region` is no longer used.
 
 ### Optional active-speaker identification
 
@@ -93,6 +102,45 @@ hf download tencent/WeVisOne-VL-2B --local-dir models/wevisone-vl-2b
 
 Set `visual_speaker_enabled` to `true`. `visual_sample_seconds` controls sampling frequency, `teams_window_title` selects the visible Teams window, and `wevisone_model_dir` points to the local model. The model runs outside the audio threads; visual failure never stops audio recording.
 
+Before each recording the app checks that the model folder contains `config.json` and its weights (`model.safetensors`). If the download is incomplete, the recording continues with audio only and the status line explains what is missing. If the model fails to load during a recording, frame sampling stops and the same warning is shown. `wevisone-vl` is pinned to a tested commit in `pyproject.toml`.
+
+### Important moments
+
+While recording, "Marcar momento" (with an optional note) or the global hotkey **Ctrl+Alt+M** marks the current instant, even while Teams has focus; the hotkey plays a short confirmation sound and is registered only during a recording.
+
+- Each moment stores its time in the recording and a JPEG screenshot of the Teams window in `data/<meeting>/moments/` (index in `moments.jsonl`).
+- If Teams is minimized or hidden, the moment is still recorded without a screenshot, and the status line says why. Windows does not render minimized windows, so nothing can be captured from them.
+- Moments appear in the transcript at their time (double-click opens the screenshot) and are sent to the minutes as text only; screenshots never leave the machine.
+- If another application already owns Ctrl+Alt+M, the recording card says so and the button keeps working.
+- Teams is captured with `PrintWindow(PW_RENDERFULLCONTENT)`: a plain screen grab of a WebView2/Chromium window returns black, while this works even when other windows cover Teams. All-black captures are discarded.
+- With a single monitor while presenting, Teams is often minimized: a moment marked by hand then captures the monitor under the cursor (what participants are seeing). Automatic attendee OCR never captures the whole screen.
+
+### Performance notes
+
+- Transcription skips silence (`skip_silence=True`): only stretches with sound reach Parakeet. Each track is mostly silence while the other side talks; on short test meetings this saved 20–30 % of transcription time. Bursts shorter than 0.75 s are ignored because they made the model invent filler words.
+- Parakeet loads per transcription (~23 s, ~2.2 GB RAM) and is released afterwards, so the idle app stays around 110 MB.
+- Never declare a font fallback list in the stylesheet (`font-family: "Cascadia Mono", "Consolas"`): it made Qt load its whole font database, +230 MB of RAM and most of the startup time. `mono_font_family()` picks one installed family instead.
+- The recordings list is painted by a delegate instead of one widget per meeting. With 300 meetings, startup went from 7.0 s to 0.6 s together with the font fix below.
+- Transcript row heights are computed with font metrics and refreshed once after resizing (2-hour transcript: open 1.8 s → 0.2 s, resize 0.9 s → 0.02 s per step).
+- The executable leaves out the optional WeVisOne stack (torch, transformers, scipy, matplotlib, av); see `TeamsLite.spec`.
+
+### Audio devices during a meeting
+
+- Microphone and system audio are recorded independently. If one device disappears (Bluetooth drops, USB unplugged), that stream retries on the current default device while the other keeps recording.
+- If the Windows default device changes (for example, headphones plugged in), the stream switches to the new device; otherwise the old loopback would record silence with no error.
+- These recovered problems are shown on the status line while recording and stored as meeting events. A stream that never captured anything still marks the meeting as failed.
+- Each capture thread initializes COM itself. Before this, only the first recording of an app session captured audio; later ones failed with `CO_E_NOTINITIALIZED` (0x800401F0).
+
+### Meeting minutes (Claude Code or Codex)
+
+"Generar minuta" sends the transcript (plus the OCR attendee list) to a locally installed, signed-in AI CLI and saves the answer as `data/<meeting>/minutes.md`. The Minuta view renders it, and Copiar/Descargar act on the visible view. Choose the CLI in the selector next to the button; `minutes_cli` in `config.json` (`claude` or `codex`) sets the default.
+
+- The meeting content leaves the machine and is processed by Anthropic (Claude) or OpenAI (Codex). Confirm this is allowed for the meeting.
+- The transcript travels only through stdin, never as a command-line argument (the npm `.CMD` shims run through `cmd.exe`).
+- Claude runs as `claude -p --tools "" --setting-sources "" --strict-mcp-config --no-session-persistence`: no tools, and none of the user's hooks, plugins or MCP servers. Loading user settings took ~100 s per run and hung when the model requested a tool; without them a run takes ~10–15 s.
+- Codex runs as `codex exec --sandbox read-only --skip-git-repo-check --ephemeral -o <file> -`. Read-only still allows reading files, so Claude is the default.
+- Both run in an empty temporary folder. A run that exceeds 10 minutes is cancelled and its whole process tree is killed; previous minutes are kept on any failure.
+
 ## Run
 
 ```powershell
@@ -101,13 +149,24 @@ teams-lite --config config.json
 python -m teams_lite --config config.json
 ```
 
+### Build the Windows executable
+
+Install the build extra after the runtime dependencies, then run the deterministic build script:
+
+```powershell
+pip install -e ".[asr,ocr,vision,build]"
+.\build_windows.ps1
+```
+
+The executable is created at `dist/TeamsLite/TeamsLite.exe`. The build writes absolute local paths for `data_dir` and the model folders into the generated `dist/TeamsLite/config.json`; model weights are not duplicated inside the executable folder. Recordings stay in the project `data` folder because PyInstaller wipes `dist/TeamsLite` on every rebuild; the build refuses a `data_dir` inside `dist`. Without `--config`, the executable reads the `config.json` next to `TeamsLite.exe`, regardless of the shortcut's start folder.
+
 1. Confirm the Windows default input/output devices match the devices Teams uses.
 2. Notify participants and obtain any required consent.
 3. Start recording before the important conversation begins.
 4. Optionally enable active-speaker identification before recording; keep the Teams meeting window visible.
 5. Stop recording. WAV finalization completes before CPU transcription starts.
 
-Meeting data is stored under `data/<meeting-id>/`; metadata is in `data/meetings.sqlite3`.
+Meeting data is stored under `data/<meeting-id>/`; metadata is in `data/meetings.sqlite3`. New meetings use a readable, unique folder name: local start date, hour and minute, then the title (for example `data/2026-11-13 07-44 Daily ventas/`). Characters Windows does not allow in names become `_`, the title is cut to 40 characters, and a second meeting with the same minute and title gets ` (2)`. Meetings recorded before this change keep their original folder.
 
 ## Recovery model
 

@@ -12,10 +12,40 @@ from teams_lite.window_capture import (
     CapturedFrame,
     FrameSampler,
     TeamsWindow,
+    TeamsWindowMinimized,
     TeamsWindowUnavailable,
     capture_teams_frame,
     select_teams_window,
 )
+
+
+class MinimizedTeamsTests(unittest.TestCase):
+    def test_only_minimized_teams_explains_why_nothing_can_be_captured(self):
+        # Windows reports minimized windows as visible, parked at -32000 with a title-bar size.
+        windows = [TeamsWindow(9, "Reunión | Microsoft Teams", (-32000, -32000, -31840, -31972), minimized=True)]
+        with self.assertRaises(TeamsWindowMinimized) as caught:
+            select_teams_window(windows)
+        self.assertIsInstance(caught.exception, TeamsWindowUnavailable)
+        self.assertIn("minimizado", str(caught.exception))
+
+    def test_prefers_a_visible_teams_window_over_a_minimized_one(self):
+        windows = [
+            TeamsWindow(9, "Reunión | Microsoft Teams", (-32000, -32000, -31840, -31972), minimized=True),
+            TeamsWindow(4, "Vista compacta | Microsoft Teams", (100, 100, 500, 400)),
+        ]
+        self.assertEqual(4, select_teams_window(windows).handle)
+
+    def test_capture_never_grabs_a_minimized_window(self):
+        grabber = mock.Mock()
+        with tempfile.TemporaryDirectory() as temp:
+            with self.assertRaises(TeamsWindowMinimized):
+                capture_teams_frame(
+                    temp,
+                    0.0,
+                    windows=lambda: [TeamsWindow(9, "Microsoft Teams", (-32000, -32000, -31840, -31972), minimized=True)],
+                    grabber=grabber,
+                )
+        grabber.assert_not_called()
 
 
 class WindowCaptureTests(unittest.TestCase):
@@ -52,6 +82,20 @@ class WindowCaptureTests(unittest.TestCase):
             self.assertEqual(7, frame.window_handle)
             self.assertTrue(frame.path.is_file())
             self.assertEqual({"window": 7}, calls[0])
+
+    def test_all_black_capture_is_rejected_instead_of_saved(self):
+        # How a failed grab of a GPU-composited (Chromium/WebView2) window looks: a single black color.
+        window = TeamsWindow(7, "Reunión | Microsoft Teams", (0, 0, 800, 600))
+        with tempfile.TemporaryDirectory() as temp:
+            with self.assertRaises(TeamsWindowUnavailable) as caught:
+                capture_teams_frame(
+                    Path(temp),
+                    0,
+                    windows=lambda: [window],
+                    grabber=lambda **kwargs: Image.new("RGB", (800, 600), "black"),
+                )
+            self.assertIn("negra", str(caught.exception))
+            self.assertEqual([], list(Path(temp).iterdir()))
 
     def test_missing_teams_window_fails_without_capturing_desktop(self):
         with tempfile.TemporaryDirectory() as temp:

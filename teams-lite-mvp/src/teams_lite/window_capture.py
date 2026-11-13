@@ -16,11 +16,16 @@ class TeamsWindowUnavailable(RuntimeError):
     """No visible Teams meeting window can be captured."""
 
 
+class TeamsWindowMinimized(TeamsWindowUnavailable):
+    """Teams is open but minimized: Windows does not render its content, so nothing can be read."""
+
+
 @dataclass(frozen=True)
 class TeamsWindow:
     handle: int
     title: str
     bounds: tuple[int, int, int, int]
+    minimized: bool = False
 
     @property
     def area(self) -> int:
@@ -59,6 +64,7 @@ def list_visible_windows() -> list[TeamsWindow]:
             int(handle),
             title_buffer.value,
             (rectangle.left, rectangle.top, rectangle.right, rectangle.bottom),
+            bool(user32.IsIconic(handle)),
         ))
         return True
 
@@ -79,7 +85,78 @@ def select_teams_window(
         ]
     if not matches:
         raise TeamsWindowUnavailable("No se encontró una ventana visible de Microsoft Teams")
+    visible = [window for window in matches if not window.minimized]
+    if not visible:
+        raise TeamsWindowMinimized(
+            "Teams está minimizado: restaura su ventana (puede quedar en otro monitor o detrás de otras)."
+        )
+    matches = visible
     return max(matches, key=lambda window: (window.area, window.title.casefold(), window.handle))
+
+
+_PW_RENDERFULLCONTENT = 0x00000002
+
+
+class _BitmapInfoHeader(ctypes.Structure):
+    _fields_ = [
+        ("biSize", wintypes.DWORD),
+        ("biWidth", wintypes.LONG),
+        ("biHeight", wintypes.LONG),
+        ("biPlanes", wintypes.WORD),
+        ("biBitCount", wintypes.WORD),
+        ("biCompression", wintypes.DWORD),
+        ("biSizeImage", wintypes.DWORD),
+        ("biXPelsPerMeter", wintypes.LONG),
+        ("biYPelsPerMeter", wintypes.LONG),
+        ("biClrUsed", wintypes.DWORD),
+        ("biClrImportant", wintypes.DWORD),
+    ]
+
+
+def grab_window(*, window: int):
+    """Ask the window to render itself with PrintWindow(PW_RENDERFULLCONTENT).
+
+    Teams is WebView2 (Chromium): a screen grab of its window returns plain black, while
+    PrintWindow with PW_RENDERFULLCONTENT renders its real content, even when other
+    windows cover it (verified with an Edge window). Minimized windows still render nothing.
+    """
+    from PIL import Image
+
+    user32, gdi32 = ctypes.windll.user32, ctypes.windll.gdi32
+    handle = ctypes.c_void_p(window)
+    rectangle = wintypes.RECT()
+    if not user32.GetWindowRect(handle, ctypes.byref(rectangle)):
+        raise TeamsWindowUnavailable("No se pudo leer el tamaño de la ventana de Teams")
+    width, height = rectangle.right - rectangle.left, rectangle.bottom - rectangle.top
+    if width <= 0 or height <= 0:
+        raise TeamsWindowUnavailable("La ventana de Teams no tiene un tamaño capturable")
+    window_dc = user32.GetWindowDC(handle)
+    memory_dc = gdi32.CreateCompatibleDC(window_dc)
+    bitmap = gdi32.CreateCompatibleBitmap(window_dc, width, height)
+    previous = gdi32.SelectObject(memory_dc, bitmap)
+    try:
+        if not user32.PrintWindow(handle, memory_dc, _PW_RENDERFULLCONTENT):
+            raise TeamsWindowUnavailable("Windows no pudo dibujar la ventana de Teams para capturarla")
+        header = _BitmapInfoHeader(ctypes.sizeof(_BitmapInfoHeader), width, -height, 1, 32, 0, 0, 0, 0, 0, 0)
+        buffer = ctypes.create_string_buffer(width * height * 4)
+        if not gdi32.GetDIBits(memory_dc, bitmap, 0, height, buffer, ctypes.byref(header), 0):
+            raise TeamsWindowUnavailable("No se pudieron leer los píxeles de la ventana de Teams")
+        return Image.frombuffer("RGB", (width, height), buffer, "raw", "BGRX", 0, 1).copy()
+    finally:
+        gdi32.SelectObject(memory_dc, previous)
+        gdi32.DeleteObject(bitmap)
+        gdi32.DeleteDC(memory_dc)
+        user32.ReleaseDC(handle, window_dc)
+
+
+def _is_all_black(image) -> bool:
+    extrema = getattr(image, "getextrema", None)
+    if extrema is None:
+        return False
+    bands = extrema()
+    if bands and not isinstance(bands[0], tuple):
+        bands = (bands,)
+    return all(high == 0 for _, high in bands)
 
 
 def capture_teams_frame(
@@ -93,8 +170,7 @@ def capture_teams_frame(
     utc_now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
 ) -> CapturedFrame:
     if grabber is None:
-        from PIL import ImageGrab
-        grabber = ImageGrab.grab
+        grabber = grab_window
     window = select_teams_window(windows(), title_hint)
     captured_monotonic = monotonic()
     captured_utc = utc_now()
@@ -102,10 +178,17 @@ def capture_teams_frame(
         image = grabber(window=window.handle)
     except TypeError:
         image = grabber(bbox=window.bounds, all_screens=True)
+    if _is_all_black(image):
+        raise TeamsWindowUnavailable("La captura de Teams salió negra; no se guarda una imagen vacía.")
+    return _save_frame(image, output_dir, "teams", captured_utc, captured_monotonic, meeting_origin_monotonic,
+                       window.handle)
+
+
+def _save_frame(image, output_dir, prefix, captured_utc, captured_monotonic, meeting_origin_monotonic, handle):
     destination = Path(output_dir)
     destination.mkdir(parents=True, exist_ok=True)
     stamp = captured_utc.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    path = destination / f"teams-{stamp}.png"
+    path = destination / f"{prefix}-{stamp}.png"
     temporary = destination / f".{path.stem}.part.png"
     try:
         image.save(temporary, format="PNG")
@@ -116,8 +199,54 @@ def capture_teams_frame(
         path,
         max(0.0, captured_monotonic - meeting_origin_monotonic),
         captured_utc.isoformat(),
-        window.handle,
+        handle,
     )
+
+
+def cursor_monitor_bounds() -> tuple[int, int, int, int]:
+    """Bounds of the monitor under the mouse cursor (where the presenter is working)."""
+    if os.name != "nt":
+        raise TeamsWindowUnavailable("La captura de pantalla solo está disponible en Windows")
+
+    class MonitorInfo(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT),
+                    ("rcWork", wintypes.RECT), ("dwFlags", wintypes.DWORD)]
+
+    user32 = ctypes.windll.user32
+    user32.MonitorFromPoint.restype = ctypes.c_void_p
+    point = wintypes.POINT()
+    if not user32.GetCursorPos(ctypes.byref(point)):
+        raise TeamsWindowUnavailable("No se pudo leer la posición del cursor")
+    monitor = user32.MonitorFromPoint(point, 2)  # MONITOR_DEFAULTTONEAREST
+    info = MonitorInfo()
+    info.cbSize = ctypes.sizeof(MonitorInfo)
+    if not monitor or not user32.GetMonitorInfoW(ctypes.c_void_p(monitor), ctypes.byref(info)):
+        raise TeamsWindowUnavailable("No se pudo identificar el monitor activo")
+    area = info.rcMonitor
+    return area.left, area.top, area.right, area.bottom
+
+
+def capture_active_screen(
+    output_dir: str | Path,
+    meeting_origin_monotonic: float,
+    *,
+    bounds: Callable[[], tuple[int, int, int, int]] = cursor_monitor_bounds,
+    grabber: Callable[..., object] | None = None,
+    monotonic: Callable[[], float] = time.monotonic,
+    utc_now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+) -> CapturedFrame:
+    """Screenshot the whole monitor under the cursor. Only for moments the user marks on purpose."""
+    if grabber is None:
+        from PIL import ImageGrab
+
+        grabber = ImageGrab.grab
+    area = bounds()
+    captured_monotonic = monotonic()
+    captured_utc = utc_now()
+    image = grabber(bbox=area, all_screens=True)
+    if _is_all_black(image):
+        raise TeamsWindowUnavailable("La captura de pantalla salió negra; no se guarda una imagen vacía.")
+    return _save_frame(image, output_dir, "screen", captured_utc, captured_monotonic, meeting_origin_monotonic, 0)
 
 
 class FrameSampler:
