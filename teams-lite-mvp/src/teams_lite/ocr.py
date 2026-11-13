@@ -5,11 +5,13 @@ Only the Teams window is read (never the whole screen), and screenshots are not 
 """
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import re
+import shutil
 import time
 
 from .window_capture import CapturedFrame, capture_teams_frame
@@ -91,12 +93,31 @@ def extract_participant_names(text: str) -> list[str]:
     return names
 
 
+def find_tesseract(
+    *,
+    which: Callable[[str], str | None] = shutil.which,
+    environ: Mapping[str, str] = os.environ,
+) -> str | None:
+    """tesseract on PATH, else the standard Windows install folders (its installer skips PATH)."""
+    found = which("tesseract")
+    if found:
+        return found
+    roots = [environ.get("ProgramFiles"), environ.get("ProgramFiles(x86)")]
+    if environ.get("LOCALAPPDATA"):
+        roots.append(str(Path(environ["LOCALAPPDATA"]) / "Programs"))
+    for root in roots:
+        if root and (candidate := Path(root) / "Tesseract-OCR" / "tesseract.exe").is_file():
+            return str(candidate)
+    return None
+
+
 def _tesseract_recognizer(tesseract_cmd: str | None) -> Callable[[Path], str]:
     try:
         from PIL import Image
         import pytesseract
     except ImportError as exc:
         raise RuntimeError("Instala Teams Lite con el complemento 'ocr' e instala Tesseract OCR.") from exc
+    tesseract_cmd = tesseract_cmd or find_tesseract()
     if tesseract_cmd:
         pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
     try:

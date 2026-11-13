@@ -2,10 +2,13 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from PIL import Image
 
 from teams_lite.ocr import (
+    _tesseract_recognizer,
+    find_tesseract,
     extract_name_hints,
     extract_participant_names,
     load_participants,
@@ -98,3 +101,31 @@ class OcrTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FindTesseractTests(unittest.TestCase):
+    # The UB-Mannheim installer (also used through winget) does not add Tesseract to PATH.
+    def test_tesseract_on_path_wins(self):
+        self.assertEqual(find_tesseract(which=lambda name: r"C:\tools\tesseract.exe", environ={}), r"C:\tools\tesseract.exe")
+
+    def test_standard_install_folder_is_found_when_not_on_path(self):
+        with tempfile.TemporaryDirectory() as root:
+            executable = Path(root) / "Tesseract-OCR" / "tesseract.exe"
+            executable.parent.mkdir()
+            executable.write_bytes(b"")
+            found = find_tesseract(which=lambda name: None, environ={"ProgramFiles": root})
+        self.assertEqual(found, str(executable))
+
+    def test_missing_tesseract_returns_none(self):
+        with tempfile.TemporaryDirectory() as root:
+            self.assertIsNone(find_tesseract(which=lambda name: None, environ={"ProgramFiles": root}))
+
+    def test_recognizer_uses_the_detected_tesseract_when_config_has_none(self):
+        import pytesseract
+        previous = pytesseract.pytesseract.tesseract_cmd
+        try:
+            with mock.patch("teams_lite.ocr.find_tesseract", return_value=r"C:\found\tesseract.exe"):
+                _tesseract_recognizer(None)
+            self.assertEqual(pytesseract.pytesseract.tesseract_cmd, r"C:\found\tesseract.exe")
+        finally:
+            pytesseract.pytesseract.tesseract_cmd = previous
