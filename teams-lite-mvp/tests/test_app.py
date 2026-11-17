@@ -746,7 +746,7 @@ class UiPerformanceTests(unittest.TestCase):
             )
             window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False))
             window.timer.stop()
-            window.resize(1000, 900)
+            window.resize(1200, 900)  # two-column layout: the transcript takes the right half
             window.show()
             try:
                 window.table.selectRow(0)
@@ -1424,6 +1424,50 @@ class LibraryUiTests(unittest.TestCase):
                 window._choose_placement = lambda _meeting: None  # cancelled dialog changes nothing
                 window.move_button.click()
                 self.assertEqual([row['id'] for row in storage.list_meetings(organization_id=None)], [meeting])
+            finally:
+                window.close()
+
+
+class WorkspaceLayoutTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.application = QApplication.instance() or QApplication([])
+
+    def _settle(self):
+        deadline = time.monotonic() + 0.3
+        while time.monotonic() < deadline:
+            self.application.processEvents()
+            time.sleep(0.02)
+
+    def test_recording_and_recent_on_the_left_transcript_on_the_right(self):
+        with tempfile.TemporaryDirectory() as d:
+            window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False))
+            window.timer.stop()
+            window.resize(1800, 1000)
+            window.show()
+            try:
+                self._settle()
+                recording, recent, transcript = window.recording_card, window.history_card, window.transcript_card
+                origin = window.recording_page.widget()
+
+                def box(widget):
+                    top_left = widget.mapTo(origin, widget.rect().topLeft())
+                    return top_left.x(), top_left.y(), widget.width(), widget.height()
+
+                rx, ry, rw, rh = box(recording)
+                hx, hy, hw, hh = box(recent)
+                tx, ty, tw, th = box(transcript)
+                self.assertEqual(rx, hx)  # one left column
+                self.assertGreater(hy, ry + rh - 1)  # recent recordings below the recording card
+                self.assertGreater(tx, rx + rw)  # transcript on the right
+                self.assertEqual(ty, ry)  # the right half starts at the top
+                self.assertGreaterEqual(th, (hy + hh) - ry - 2)  # and spans the left column's height
+                self.assertLess(abs(tw - rw), 40)  # two halves
+
+                window.resize(1010, 700)
+                self._settle()
+                self.assertEqual(window.overview_columns.direction(), QBoxLayout.Direction.TopToBottom)
+                self.assertGreater(box(transcript)[1], box(recent)[1])  # narrow: transcript goes below
             finally:
                 window.close()
 

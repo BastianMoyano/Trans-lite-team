@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QStackedWidget,
     QStyle,
     QStyledItemDelegate,
@@ -955,12 +956,26 @@ class MainWindow(QMainWindow):
         layout.addLayout(self._build_header())
         layout.addWidget(self._build_update_banner())
         layout.addWidget(self._build_notice())
+        # Two halves: recording and recent recordings on the left, the transcript over the
+        # full height on the right. Narrow windows stack them (see resizeEvent).
+        self.recording_card = self._build_recording_card()
+        self.history_card = self._build_history_card()
+        self.transcript_card = self._build_transcript_card()
+        left_column = QWidget()
+        left_layout = QVBoxLayout(left_column)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(16)
+        left_layout.addWidget(self.recording_card)
+        left_layout.addWidget(self.history_card, 1)
         self.overview_columns = QBoxLayout(QBoxLayout.Direction.LeftToRight)
         self.overview_columns.setSpacing(16)
-        self.overview_columns.addWidget(self._build_recording_card(), 1)
-        self.overview_columns.addWidget(self._build_history_card(), 1)
-        layout.addLayout(self.overview_columns)
-        layout.addWidget(self._build_transcript_card(), 1)
+        for half in (left_column, self.transcript_card):
+            policy = half.sizePolicy()
+            policy.setHorizontalPolicy(QSizePolicy.Policy.Ignored)
+            half.setSizePolicy(policy)
+        self.overview_columns.addWidget(left_column, 1)
+        self.overview_columns.addWidget(self.transcript_card, 1)
+        layout.addLayout(self.overview_columns, 1)
         scroll.setWidget(content)
         self.recording_page = scroll
         self.preview_page = self._build_preview_page()
@@ -1479,7 +1494,42 @@ class MainWindow(QMainWindow):
         self.history_empty.setObjectName("emptyState")
         self.history_empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.history_empty, 1)
+        layout.addWidget(_divider())
+        layout.addLayout(self._build_meeting_actions())
         return card
+
+    def _build_meeting_actions(self) -> QVBoxLayout:
+        """Actions on the meeting selected in the list, right below it."""
+        self.rename_button = QPushButton("Renombrar")
+        self.move_button = QPushButton("Mover")
+        self.export_button = QPushButton("Exportar")
+        for button, icon, label, tip in (
+            (self.rename_button, "pencil", "Renombrar…", "Cambiar el nombre de la reunión"),
+            (self.move_button, "folder", "Mover a…", "Mover a otra organización o proyecto"),
+            (self.export_button, "share", "Exportar…", "Exportar la reunión en un paquete .zip para compartirla"),
+        ):
+            button.setObjectName("ghostButton")
+            set_button_icon(button, icon, COLORS["text_soft"], gap=6)
+            button.setAccessibleName(label)
+            button.setToolTip(tip)
+        self.delete_button = QPushButton("Eliminar reunión")
+        self.delete_button.setObjectName("deleteButton")
+        set_button_icon(self.delete_button, "trash", COLORS["danger"], gap=6)
+        actions = QVBoxLayout()
+        actions.setContentsMargins(8, 0, 8, 0)
+        actions.setSpacing(6)
+        first, second = QHBoxLayout(), QHBoxLayout()
+        first.setSpacing(6)
+        for button in (self.rename_button, self.move_button, self.export_button):
+            button.setEnabled(False)
+            first.addWidget(button)
+        first.addStretch(1)
+        self.delete_button.setEnabled(False)
+        second.addStretch(1)
+        second.addWidget(self.delete_button)
+        actions.addLayout(first)
+        actions.addLayout(second)
+        return actions
 
     def _build_transcript_card(self) -> QFrame:
         card, layout = _card()
@@ -1503,29 +1553,10 @@ class MainWindow(QMainWindow):
         self.download_button = QPushButton("Descargar")
         self.download_button.setObjectName("ghostButton")
         set_button_icon(self.download_button, "download", COLORS["text_soft"], gap=6)
-        self.rename_button = QPushButton("Renombrar")
-        self.move_button = QPushButton("Mover")
-        self.export_button = QPushButton("Exportar")
-        for button, icon, label, tip in (
-            (self.rename_button, "pencil", "Renombrar…", "Cambiar el nombre de la reunión"),
-            (self.move_button, "folder", "Mover a…", "Mover a otra organización o proyecto"),
-            (self.export_button, "share", "Exportar…", "Exportar la reunión en un paquete .zip para compartirla"),
-        ):
-            button.setObjectName("ghostButton")
-            set_button_icon(button, icon, COLORS["text_soft"], gap=6)
-            button.setAccessibleName(label)
-            button.setToolTip(tip)
-        self.delete_button = QPushButton("Eliminar reunión")
-        self.delete_button.setObjectName("deleteButton")
-        set_button_icon(self.delete_button, "trash", COLORS["danger"], gap=6)
-        for button in (self.copy_button, self.download_button, self.rename_button, self.move_button,
-                       self.export_button, self.delete_button):
+        for button in (self.copy_button, self.download_button):
             button.setEnabled(False)
-        for button in (self.copy_button, self.download_button, self.rename_button, self.move_button,
-                       self.export_button):
             actions.addWidget(button)
         actions.addStretch(1)
-        actions.addWidget(self.delete_button)
         layout.addLayout(actions)
         self.transcript_attendees = QLabel()
         self.transcript_attendees.setObjectName("sectionMeta")
@@ -1549,6 +1580,10 @@ class MainWindow(QMainWindow):
             toolbar.addWidget(button)
         self.view_transcript_button.setChecked(True)
         toolbar.addStretch(1)
+        layout.addLayout(toolbar)
+        minutes_row = QHBoxLayout()
+        minutes_row.setSpacing(8)
+        minutes_row.addStretch(1)
         self.minutes_cli_combo = QComboBox()
         self.minutes_cli_combo.setAccessibleName("CLI para la minuta y el chat")
         for cli, label in _CLI_LABELS.items():
@@ -1560,9 +1595,9 @@ class MainWindow(QMainWindow):
             "Envía la transcripción a la CLI elegida (sin herramientas ni acceso a archivos) "
             "y guarda la respuesta en minutes.md."
         )
-        toolbar.addWidget(self.minutes_cli_combo)
-        toolbar.addWidget(self.generate_minutes_button)
-        layout.addLayout(toolbar)
+        minutes_row.addWidget(self.minutes_cli_combo)
+        minutes_row.addWidget(self.generate_minutes_button)
+        layout.addLayout(minutes_row)
         layout.addWidget(_divider())
 
         self.transcript_stack = QStackedWidget()
@@ -1588,7 +1623,9 @@ class MainWindow(QMainWindow):
         self._row_fit_timer.setSingleShot(True)
         self._row_fit_timer.setInterval(80)
         self._row_fit_timer.timeout.connect(self._fit_transcript_rows)
-        self.transcript_table.viewport().installEventFilter(self)
+        # Kept as a plain reference: the filter must not touch the table while the window is torn down.
+        self._transcript_viewport = self.transcript_table.viewport()
+        self._transcript_viewport.installEventFilter(self)
         transcript_header = self.transcript_table.horizontalHeader()
         transcript_header.setVisible(False)
         transcript_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
@@ -2195,7 +2232,7 @@ class MainWindow(QMainWindow):
         self.transcript_table.scrollToTop()
 
     def eventFilter(self, watched, event):  # noqa: N802 - Qt API
-        if watched is self.transcript_table.viewport() and event.type() == QEvent.Type.Resize:
+        if watched is getattr(self, "_transcript_viewport", None) and event.type() == QEvent.Type.Resize:
             self._row_fit_timer.start()  # recompute once the user stops resizing
         return super().eventFilter(watched, event)
 
