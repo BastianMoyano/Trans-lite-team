@@ -167,6 +167,11 @@ class ExportImportTests(unittest.TestCase):
             self._package('escape.zip', {'files/../../evil.txt': 'x'}),
             self._package('absolute.zip', {'files/C:/evil.txt': 'x'}),
             self._package('rooted.zip', {'files//evil.txt': 'x'}),
+            # Windows trims trailing dots and spaces: ".. " would act like ".." and leave undeletable folders.
+            self._package('dot-space.zip', {'files/x/.. /.. /evil.txt': 'x'}),
+            self._package('dots-space.zip', {'files/x/... /evil.txt': 'x'}),
+            self._package('trailing-dot.zip', {'files/x./evil.txt': 'x'}),
+            self._package('dot-space-dir.zip', {'files/x/.. /': ''}),
             self._package('no-manifest.zip', {'files/a.txt': 'x'}, manifest=False),
             self._package('other-format.zip', {}, manifest={'format': 'something', 'version': 1}),
             self._package('newer.zip', {}, manifest={'format': 'teams-lite-meeting', 'version': 99}),
@@ -179,6 +184,74 @@ class ExportImportTests(unittest.TestCase):
                 self.assertEqual(_snapshot(self.target), before)
         self.assertFalse(outside.exists())
         self.assertIn(existing, {row['id'] for row in self.target.list_meetings()})
+
+    def _audio_manifest(self, **segment_changes):
+        segment = {'stream_id': 's', 'sequence': 0, 'started_monotonic': 1.0,
+                   'started_utc': '2026-11-17T10:00:00+00:00', 'ended_utc': None, 'frames': 1,
+                   'status': 'finalized', 'file': 'audio/a.wav'}
+        segment.update(segment_changes)
+        return {
+            'format': 'teams-lite-meeting', 'version': 1,
+            'meeting': {'title': 'x', 'started_utc': '2026-11-17T10:00:00+00:00', 'ended_utc': None,
+                        'status': 'completed'},
+            'organization': None, 'project': None, 'includes_audio': True,
+            'streams': [{'id': 's', 'kind': 'microphone', 'sample_rate': 8000, 'channels': 1}],
+            'segments': [segment], 'events': [],
+        }
+
+    def test_malformed_values_are_rejected_as_damaged_packages(self):
+        before = _snapshot(self.target)
+        twice = self._audio_manifest()
+        twice['segments'].append(dict(twice['segments'][0]))
+        same_file = self._audio_manifest()
+        same_file['segments'].append(dict(same_file['segments'][0], sequence=1))
+        cases = {
+            'huge-sequence': self._audio_manifest(sequence=2 ** 63),
+            'huge-frames': self._audio_manifest(frames=2 ** 63),
+            'nan-offset': self._audio_manifest(started_monotonic=float('nan')),
+            'infinite-offset': self._audio_manifest(started_monotonic=float('inf')),
+            'year-one': self._audio_manifest(started_utc='0001-01-01T00:00:00+00:00'),
+            'duplicate-segment': twice,
+            'shared-audio-file': same_file,
+        }
+        far_meeting = self._audio_manifest()
+        far_meeting['meeting']['started_utc'] = '9999-12-31T23:59:59+00:00'
+        cases['far-future-meeting'] = far_meeting
+        for name, manifest in cases.items():
+            with self.subTest(case=name):
+                package = self._package(f'{name}.zip', {'audio/a.wav': 'RIFF'}, manifest=manifest)
+                with self.assertRaises(PackageError):
+                    import_meeting(self.target, package)
+                self.assertEqual(_snapshot(self.target), before)
+
+    def test_file_and_folder_with_the_same_name_is_a_package_error(self):
+        before = _snapshot(self.target)
+        package = self._package('clash.zip', {'files/a': 'x', 'files/a/b': 'y'})
+
+        with self.assertRaises(PackageError):
+            import_meeting(self.target, package)
+
+        self.assertEqual(_snapshot(self.target), before)
+
+    def test_folder_entries_of_rezipped_packages_are_accepted(self):
+        package = self._package('rezipped.zip', {'files/': '', 'audio/': '', 'files/moments/': '',
+                                                 'files/transcript.txt': 'hola'})
+
+        imported = import_meeting(self.target, package)
+
+        self.assertEqual((self.target.root / imported / 'transcript.txt').read_text(encoding='utf-8'), 'hola')
+
+    def test_package_larger_than_the_free_disk_space_is_rejected(self):
+        meeting = _recorded_meeting(self.source)
+        package = export_meeting(self.source, meeting, self.out / 'demo.zip')
+        before = _snapshot(self.target)
+        full_disk = mock.Mock(free=10)
+
+        with mock.patch('teams_lite.sharing.shutil.disk_usage', return_value=full_disk):
+            with self.assertRaisesRegex(PackageError, 'espacio'):
+                import_meeting(self.target, package)
+
+        self.assertEqual(_snapshot(self.target), before)
 
     def test_failed_import_leaves_no_meeting_or_folder(self):
         meeting = _recorded_meeting(self.source)

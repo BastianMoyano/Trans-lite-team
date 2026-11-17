@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -122,9 +123,13 @@ def _member_parts(name: str) -> list[str] | None:
     if "\\" in name or ":" in name or name.startswith("/"):
         return None
     parts = name.rstrip("/").split("/")
-    if any(part in ("", ".", "..") for part in parts):
+    # Windows drops trailing dots and spaces from names, so ".. " would behave like "..".
+    if any(part in ("", ".", "..") or part != part.rstrip(" .") for part in parts):
         return None
     return parts
+
+
+_MAX_INTEGER = 2 ** 62  # SQLite stores signed 64-bit integers
 
 
 def _text(value, *, optional: bool = False) -> bool:
@@ -132,21 +137,23 @@ def _text(value, *, optional: bool = False) -> bool:
 
 
 def _integer(value, minimum: int = 0) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and value >= minimum
+    return isinstance(value, int) and not isinstance(value, bool) and minimum <= value <= _MAX_INTEGER
 
 
 def _number(value) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
+    # json.loads accepts NaN and Infinity, which the database and the transcript timeline cannot use.
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
 def _timestamp(value, *, optional: bool = False) -> bool:
     if optional and value is None:
         return True
     try:
-        datetime.fromisoformat(value)
-    except (TypeError, ValueError):
+        moment = datetime.fromisoformat(value)
+        moment.astimezone()  # the meeting folder name uses local time
+    except (TypeError, ValueError, OverflowError, OSError):
         return False
-    return True
+    return 1970 <= moment.year <= 9000
 
 
 def _check_manifest(manifest, audio_members: set[str]) -> None:
@@ -173,8 +180,16 @@ def _check_manifest(manifest, audio_members: set[str]) -> None:
                 and _integer(stream.get("sample_rate"), 1) and _integer(stream.get("channels"), 1)):
             raise invalid
         stream_ids.add(stream["id"])
+    sequences, files = set(), set()
     for segment in segments:
-        if not (isinstance(segment, dict) and segment.get("stream_id") in stream_ids
+        if not isinstance(segment, dict):
+            raise invalid
+        key, file = (segment.get("stream_id"), segment.get("sequence")), segment.get("file")
+        if key in sequences or file in files:  # each segment is one row and one WAV of its own
+            raise invalid
+        sequences.add(key)
+        files.add(file)
+        if not (segment.get("stream_id") in stream_ids
                 and _integer(segment.get("sequence")) and _integer(segment.get("frames"))
                 and _number(segment.get("started_monotonic")) and _timestamp(segment.get("started_utc"))
                 and _timestamp(segment.get("ended_utc"), optional=True)
@@ -198,6 +213,8 @@ def _open(path: str | Path) -> tuple[zipfile.ZipFile, dict, list[tuple[zipfile.Z
             if info.filename == MANIFEST:
                 continue
             parts = _member_parts(info.filename)
+            if parts is not None and len(parts) == 1 and parts[0] in (_FILES, _AUDIO) and info.is_dir():
+                continue  # folder entries written by Explorer or 7-Zip when a package is re-zipped
             if parts is None or parts[0] not in (_FILES, _AUDIO) or len(parts) < 2:
                 raise PackageError(f"El paquete contiene una ruta no permitida: {info.filename}")
             if parts[0] == _AUDIO and (len(parts) != 2 or info.is_dir()):
@@ -251,18 +268,24 @@ def import_meeting(
     staging = store.root / f".import-{uuid.uuid4().hex}"
     try:
         with archive:
+            needed = sum(info.file_size for info, _parts in members)
+            if needed > shutil.disk_usage(store.root).free:
+                raise PackageError("No hay espacio suficiente en disco para importar el paquete")
             staging.mkdir()
             root = staging.resolve()
-            for info, parts in members:
-                target = staging.joinpath(*parts[1:])
-                if not target.resolve().is_relative_to(root):  # defence in depth after _member_parts
-                    raise PackageError(f"El paquete contiene una ruta no permitida: {info.filename}")
-                if info.is_dir():
-                    target.mkdir(parents=True, exist_ok=True)
-                    continue
-                target.parent.mkdir(parents=True, exist_ok=True)
-                with archive.open(info) as source, target.open("wb") as output:
-                    shutil.copyfileobj(source, output)
+            try:
+                for info, parts in members:
+                    target = staging.joinpath(*parts[1:])
+                    if not target.resolve().is_relative_to(root):  # defence in depth after _member_parts
+                        raise PackageError(f"El paquete contiene una ruta no permitida: {info.filename}")
+                    if info.is_dir():
+                        target.mkdir(parents=True, exist_ok=True)
+                        continue
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with archive.open(info) as source, target.open("wb") as output:
+                        shutil.copyfileobj(source, output)
+            except (OSError, zipfile.BadZipFile) as exc:
+                raise PackageError(f"No se pudo extraer el paquete: {exc}") from exc
         segments = [dict(segment, file=segment["file"].split("/", 1)[1]) for segment in manifest["segments"]]
         return store.adopt_meeting(
             staging,

@@ -200,7 +200,7 @@ To publish an update, raise `version` in `pyproject.toml` and `__version__` in `
 
 The left menu has three sections:
 
-- **Teams Lite** records and shows transcripts. Before recording, choose an **Organización** and a **Proyecto**. With no organization chosen, the meeting goes to the **Cofre de reuniones**, the default place for unfiled meetings. **Mover a…** (next to *Eliminar reunión*) files the selected meeting in another organization or project, or back in the Cofre.
+- **Teams Lite** records and shows transcripts. Before recording, choose an **Organización** and a **Proyecto**. With no organization chosen, the meeting goes to the **Cofre de reuniones**, the default place for unfiled meetings. The folder icon **Mover a…** (next to *Eliminar reunión*) files the selected meeting in another organization or project, or back in the Cofre.
 - **Vista previa** browses organizations, then their projects (plus *Sin proyecto*), then their meetings newest first. Each meeting shows a thumbnail: the first marked moment's screenshot, otherwise the first active-speaker frame, otherwise a placeholder. Organization and project cards use the newest meeting with a screenshot. Double-click a meeting to open it in Teams Lite; right-click or **Mover a…** to move it.
 - **Administrar** creates, renames and deletes organizations and projects. Names are unique, ignoring case (projects within their organization). Deleting an organization sends its meetings to the Cofre; deleting a project keeps its meetings in the organization without a project. Meetings are never deleted from here.
 
