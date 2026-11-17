@@ -15,7 +15,7 @@ Branch: feat/workspace-usability · Delivery: ask-on-risk · Test runner: `.venv
 - T3 [S3] inline — two-column Grabar layout — done, RED (no recording_card) → GREEN layout test; meeting actions moved under the recent list, views and minutes controls on two rows, equal halves (Ignored horizontal policy); resize test starts at 1200 px (two-column mode); eventFilter no longer touches a deleted table on close
 - T4 [S2] inline — "Capturas" gallery tab — done, RED 2+2 → GREEN; previews.meeting_screenshots (moments by time, then active-speaker frames; unsafe or missing images skipped) also backs meeting_thumbnail; thumbnails load 6 per timer tick; double click opens the image
 - T5 [S4] inline — Organización visual pass — done, RED (no COUNT_ROLE) → GREEN; summary line, title + actions with icons above each list, rows with icon and meeting count (delegate; row text stays the name), "Proyectos de <org>", empty-state guidance; offscreen capture checked
-- T6 [S1-S5] inline — README — pending
+- T6 [S1-S5] inline — README — done (structural readback); also replaced the pre-v0.4 section names (Teams Lite/Vista previa/Administrar) with Grabar/Biblioteca/Organización
 
 ## Log
 - L1 (2026-11-17): "tire un v4, pero me falto algunas cosas,en grabaciones reciente debe salir las del proyecto que estoy, no hay un visualizacion de la img de todo los scrennshot que se tomo en la reu, lo otro la seccion de transcipcion que ocupe toda la mitas de la parte derecha y en la otra mitad de la iz la seccion de nueva grabacion y habajo reunion mas reciente , en organizacion, arreglar un poco esa seccion lo visual, tambien lo otro poder renombrar las reuniones"
