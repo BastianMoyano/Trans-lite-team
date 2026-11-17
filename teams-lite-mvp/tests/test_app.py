@@ -486,6 +486,23 @@ class MinutesUiTests(unittest.TestCase):
                 window.close()
 
 
+class FakeChatSession:
+    """Stands in for the CLI: answers instantly, fails for the question 'falla'."""
+
+    sessions = []
+
+    def __init__(self, workspace, cli, **_kwargs):
+        self.workspace, self.cli, self.questions = workspace, cli, []
+        FakeChatSession.sessions.append(self)
+
+    def ask(self, question):
+        from teams_lite.chat import ChatError
+        if question == 'falla':
+            raise ChatError("No se encontró la CLI 'claude' en el PATH; instálala e inicia sesión.")
+        self.questions.append(question)
+        return f'Respuesta {len(self.questions)} a {question}'
+
+
 class ChatUiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -495,34 +512,95 @@ class ChatUiTests(unittest.TestCase):
     _open = MinutesUiTests._open
     _click_card = staticmethod(lambda page, label: LibraryUiTests._click_card(page, label))
 
-    def test_meeting_chat_opens_the_selected_cli_over_that_meeting(self):
-        with tempfile.TemporaryDirectory() as d, mock.patch('teams_lite.app.launch_chat') as launch:
+    _wait = MinutesUiTests._wait
+
+    def setUp(self):
+        FakeChatSession.sessions = []
+        patcher = mock.patch('teams_lite.chat_ui.ChatSession', FakeChatSession)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _ask(self, panel, question):
+        panel.input.setText(question)
+        panel.send_button.click()
+        self._wait(lambda: not panel.busy)
+
+    def test_meeting_chat_tab_answers_inside_the_app_and_keeps_the_conversation(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch('subprocess.Popen') as popen:
             meeting_id, _ = self._meeting_with_transcript(d, minutes='# Minuta\nMigrar antes del 30\n')
             window = self._open(d, minutes_cli='codex')
             try:
-                self.assertTrue(window.chat_button.isEnabled())
-                window.chat_button.click()
+                panel = window.chat_panel
+                self.assertEqual(window.view_chat_button.text(), 'Chat')
+                window.view_chat_button.click()
+                self.assertIs(window.transcript_stack.currentWidget(), panel)
+                self.assertTrue(window.recording_page.isAncestorOf(panel))  # part of the app window
 
-                workspace, cli = launch.call_args.args
-                self.assertEqual('codex', cli)
-                self.assertEqual(Path(workspace), Path(d).resolve() / '.chat' / f'meeting-{meeting_id}')
-                copied = Path(workspace) / 'meetings' / meeting_id / 'minutes.md'
+                self._ask(panel, '¿Qué se acordó?')
+                self._ask(panel, '¿Cuándo?')
+
+                [session] = FakeChatSession.sessions
+                self.assertEqual(session.cli, 'codex')
+                self.assertEqual(Path(session.workspace), Path(d).resolve() / '.chat' / f'meeting-{meeting_id}')
+                copied = Path(session.workspace) / 'meetings' / meeting_id / 'minutes.md'
                 self.assertIn('Migrar antes del 30', copied.read_text(encoding='utf-8'))
-                self.assertIn('Codex', window.status_label.text())
+                self.assertEqual(session.questions, ['¿Qué se acordó?', '¿Cuándo?'])
+                history = panel.history.toPlainText()
+                self.assertIn('¿Qué se acordó?', history)
+                self.assertIn('Respuesta 2 a ¿Cuándo?', history)
+                self.assertEqual(panel.input.text(), '')
+                popen.assert_not_called()  # no terminal or other window is opened
+                self.assertTrue(window.copy_button.isEnabled())
+                self.assertIn('Respuesta 1', window._current_export())
             finally:
                 window.close()
 
-    def test_meeting_chat_is_disabled_without_minutes(self):
+    def test_meeting_without_minutes_explains_it_in_the_chat_tab(self):
         with tempfile.TemporaryDirectory() as d:
             self._meeting_with_transcript(d)
             window = self._open(d)
             try:
-                self.assertFalse(window.chat_button.isEnabled())
+                window.view_chat_button.click()
+                panel = window.chat_panel
+                self.assertFalse(panel.input.isEnabled())
+                self.assertFalse(panel.send_button.isEnabled())
+                self.assertIn('minuta', panel.notice.text())
             finally:
                 window.close()
 
-    def test_project_chat_is_offered_inside_a_project_and_reads_its_minutes(self):
-        with tempfile.TemporaryDirectory() as d, mock.patch('teams_lite.app.launch_chat') as launch:
+    def test_each_meeting_keeps_its_own_conversation_and_new_conversation_starts_over(self):
+        with tempfile.TemporaryDirectory() as d:
+            first, _ = self._meeting_with_transcript(d, minutes='# Minuta A\n')
+            window = self._open(d)
+            try:
+                panel = window.chat_panel
+                window.view_chat_button.click()
+                self._ask(panel, 'Pregunta A')
+                panel.new_button.click()
+                self.assertNotIn('Pregunta A', panel.history.toPlainText())
+                self._ask(panel, 'Pregunta B')
+
+                self.assertEqual(len(FakeChatSession.sessions), 2)
+                self.assertEqual(FakeChatSession.sessions[1].questions, ['Pregunta B'])
+            finally:
+                window.close()
+
+    def test_failed_answer_is_shown_in_the_panel_without_a_dialog(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch('teams_lite.app.QMessageBox.warning') as modal:
+            self._meeting_with_transcript(d, minutes='# Minuta\n')
+            window = self._open(d)
+            try:
+                panel = window.chat_panel
+                window.view_chat_button.click()
+                self._ask(panel, 'falla')
+                self.assertIn('No se encontró la CLI', panel.notice.text())
+                self.assertTrue(panel.input.isEnabled())
+                modal.assert_not_called()
+            finally:
+                window.close()
+
+    def test_project_chat_panel_opens_next_to_the_meetings_in_vista_previa(self):
+        with tempfile.TemporaryDirectory() as d:
             storage = Storage(d)
             zenith = storage.create_organization('Zenith')
             crm = storage.create_project(zenith, 'CRM')
@@ -541,22 +619,27 @@ class ChatUiTests(unittest.TestCase):
                 self.assertTrue(page.chat_button.isHidden())
                 self._click_card(page, 'CRM')
                 self.assertFalse(page.chat_button.isHidden())
-                self.assertEqual([a.text() for a in page.chat_button.menu().actions()], ['Claude', 'Codex'])
+                self.assertTrue(page.chat_panel.isHidden())
 
-                page.chat_button.menu().actions()[0].trigger()
+                page.chat_button.click()
+                self.assertFalse(page.chat_panel.isHidden())
+                self.assertTrue(page.isAncestorOf(page.chat_panel))
+                page.chat_panel.cli_combo.setCurrentIndex(page.chat_panel.cli_combo.findData('claude'))
+                self._ask(page.chat_panel, '¿Qué pasó en el proyecto?')
 
-                workspace, cli = launch.call_args.args
-                self.assertEqual('claude', cli)
-                self.assertEqual(Path(workspace).parent, Path(d).resolve() / '.chat')
-                self.assertEqual([p.name for p in (Path(workspace) / 'meetings').iterdir()], [with_minutes])
-                self.assertIn('Zenith › CRM', (Path(workspace) / 'CLAUDE.md').read_text(encoding='utf-8'))
+                [session] = FakeChatSession.sessions
+                self.assertEqual(session.cli, 'claude')
+                self.assertEqual(Path(session.workspace).parent, Path(d).resolve() / '.chat')
+                self.assertEqual([p.name for p in (Path(session.workspace) / 'meetings').iterdir()], [with_minutes])
+                self.assertIn('Zenith › CRM', (Path(session.workspace) / 'CLAUDE.md').read_text(encoding='utf-8'))
+
+                page.go_to_level(0)
+                self.assertTrue(page.chat_panel.isHidden())
             finally:
                 window.close()
 
-    def test_project_chat_without_minutes_explains_why_and_launches_nothing(self):
-        with tempfile.TemporaryDirectory() as d, \
-             mock.patch('teams_lite.app.launch_chat') as launch, \
-             mock.patch('teams_lite.app.QMessageBox.warning') as modal:
+    def test_project_chat_without_minutes_explains_why(self):
+        with tempfile.TemporaryDirectory() as d:
             storage = Storage(d)
             storage.create_meeting('Suelta')
             window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False))
@@ -564,11 +647,10 @@ class ChatUiTests(unittest.TestCase):
             try:
                 page = window.preview_page
                 self._click_card(page, 'Cofre de reuniones')
-                page.chat_button.menu().actions()[1].trigger()
-
-                launch.assert_not_called()
-                self.assertIn('No hay minutas', window.status_label.text())
-                modal.assert_called_once()
+                page.chat_button.click()
+                self.assertIn('minuta', page.chat_panel.notice.text())
+                self.assertFalse(page.chat_panel.send_button.isEnabled())
+                self.assertEqual(FakeChatSession.sessions, [])
             finally:
                 window.close()
 
