@@ -14,7 +14,7 @@ Branch: feat/meeting-library · Delivery: ask-on-risk · Test runner: `.venv\Scr
 - T2 [S1,S4] inline — side navigation + organization/project picker on recording — done, RED 3 → GREEN 3, test_app 33 OK
 - T3 [S3] inline — previews module + Vista previa page — done, RED import errors → GREEN 3 previews + 3 UI, test_app 36 OK
 - T4 [S2,S5] inline — Administrar page + Mover a… dialog — done, RED import error → GREEN 4 UI tests, suite 155 OK
-- T5 [S1-S5] inline — README — pending
+- T5 [S1-S5] inline — README — done (structural readback)
 
 ## Log
 - L1 (2026-11-17): "hola necesito hacer unas mejoras en las runiones poder ordenarlos por organizacion y proyectos, tambien saber si tienes pantallazos las reuniones para tener un previsualizacion" + "quiero un menu al lado iz, que tenga  uno para administrar organizacion y proyectos, y otra seccion previsualizacion que salga organizacion entro y salga los proyectos cuando entre en proyecto salga las reuniones, ordenados por fecha, y que tenga previsualizacion de la screnshot, lo otro  la seccion de team lite ahi debe pedirme la organizacion y proyecto, si no seleccione que haga uno por defecto que diga cofre de reunion y que tenga la posiblidad de mover la reus a los proyectos correspondientes o organizacion"

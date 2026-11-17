@@ -196,6 +196,16 @@ To publish an update, raise `version` in `pyproject.toml` and `__version__` in `
 4. Optionally enable active-speaker identification before recording; keep the Teams meeting window visible.
 5. Stop recording. WAV finalization completes before CPU transcription starts.
 
+### Organizations, projects and preview
+
+The left menu has three sections:
+
+- **Teams Lite** records and shows transcripts. Before recording, choose an **Organización** and a **Proyecto**. With no organization chosen, the meeting goes to the **Cofre de reuniones**, the default place for unfiled meetings. **Mover a…** (next to *Eliminar reunión*) files the selected meeting in another organization or project, or back in the Cofre.
+- **Vista previa** browses organizations, then their projects (plus *Sin proyecto*), then their meetings newest first. Each meeting shows a thumbnail: the first marked moment's screenshot, otherwise the first active-speaker frame, otherwise a placeholder. Organization and project cards use the newest meeting with a screenshot. Double-click a meeting to open it in Teams Lite; right-click or **Mover a…** to move it.
+- **Administrar** creates, renames and deletes organizations and projects. Names are unique, ignoring case (projects within their organization). Deleting an organization sends its meetings to the Cofre; deleting a project keeps its meetings in the organization without a project. Meetings are never deleted from here.
+
+Filing is metadata only: a moved meeting keeps its folder under `data/`. Databases from earlier versions gain the new columns on first launch, and their meetings appear in the Cofre.
+
 Meeting data is stored under `data/<meeting-id>/`; metadata is in `data/meetings.sqlite3`. New meetings use a readable, unique folder name: local start date, hour and minute, then the title (for example `data/2026-11-13 07-44 Daily ventas/`). Characters Windows does not allow in names become `_`, the title is cut to 40 characters, and a second meeting with the same minute and title gets ` (2)`. Meetings recorded before this change keep their original folder.
 
 ## Recovery model
@@ -221,7 +231,9 @@ The tests cover SQLite persistence/recovery, segmented audio with fake devices, 
 src/teams_lite/
   app.py            PySide6 UI and background orchestration
   audio.py          microphone/loopback capture and segment rotation
-  storage.py        SQLite schema and interrupted-segment recovery
+  storage.py        SQLite schema, organizations/projects and interrupted-segment recovery
+  library_ui.py     organization/project picker, Vista previa and Administrar pages
+  previews.py       picks the screenshot that represents a meeting
   transcription.py  CPU ONNX transcription and timestamped exports
   speakers.py       conservative source labels/manual mapping
   ocr.py            optional screenshot OCR hints
