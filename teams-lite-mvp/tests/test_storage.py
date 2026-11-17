@@ -275,4 +275,33 @@ class LibraryTests(unittest.TestCase):
             self.assertEqual([row['id'] for row in storage.list_meetings(organization_id=zenith, project_id=None)],
                              [filed])
 
+class RenameMeetingTests(unittest.TestCase):
+    def test_rename_changes_only_the_title(self):
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            zenith = storage.create_organization('Zenith')
+            meeting = storage.create_meeting('Reunión de Teams', organization_id=zenith)
+            other = storage.create_meeting('Otra')
+            storage.finish_meeting(meeting)
+            before = storage.get_meeting(meeting)
+
+            storage.rename_meeting(meeting, '  Kickoff   CRM  ')
+
+            after = storage.get_meeting(meeting)
+            self.assertEqual(after['title'], 'Kickoff CRM')
+            self.assertEqual({k: v for k, v in after.items() if k != 'title'},
+                             {k: v for k, v in before.items() if k != 'title'})
+            self.assertTrue((Path(d) / meeting).is_dir())  # the folder keeps its name
+            self.assertEqual(storage.get_meeting(other)['title'], 'Otra')
+
+    def test_rename_rejects_empty_titles_and_unknown_meetings(self):
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            meeting = storage.create_meeting('Daily')
+            with self.assertRaisesRegex(ValueError, 'Escribe un nombre'):
+                storage.rename_meeting(meeting, '   ')
+            with self.assertRaisesRegex(ValueError, 'Reunión desconocida'):
+                storage.rename_meeting('missing', 'Nuevo')
+            self.assertEqual(storage.get_meeting(meeting)['title'], 'Daily')
+
 if __name__ == '__main__': unittest.main()

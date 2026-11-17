@@ -746,7 +746,7 @@ class UiPerformanceTests(unittest.TestCase):
             )
             window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False))
             window.timer.stop()
-            window.resize(1000, 900)
+            window.resize(1200, 900)  # two-column layout: the transcript takes the right half
             window.show()
             try:
                 window.table.selectRow(0)
@@ -1424,6 +1424,288 @@ class LibraryUiTests(unittest.TestCase):
                 window._choose_placement = lambda _meeting: None  # cancelled dialog changes nothing
                 window.move_button.click()
                 self.assertEqual([row['id'] for row in storage.list_meetings(organization_id=None)], [meeting])
+            finally:
+                window.close()
+
+
+class WorkspaceLayoutTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.application = QApplication.instance() or QApplication([])
+
+    def _settle(self):
+        deadline = time.monotonic() + 0.3
+        while time.monotonic() < deadline:
+            self.application.processEvents()
+            time.sleep(0.02)
+
+    def test_recording_and_recent_on_the_left_transcript_on_the_right(self):
+        with tempfile.TemporaryDirectory() as d:
+            window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False))
+            window.timer.stop()
+            window.resize(1800, 1000)
+            window.show()
+            try:
+                self._settle()
+                recording, recent, transcript = window.recording_card, window.history_card, window.transcript_card
+                origin = window.recording_page.widget()
+
+                def box(widget):
+                    top_left = widget.mapTo(origin, widget.rect().topLeft())
+                    return top_left.x(), top_left.y(), widget.width(), widget.height()
+
+                rx, ry, rw, rh = box(recording)
+                hx, hy, hw, hh = box(recent)
+                tx, ty, tw, th = box(transcript)
+                self.assertEqual(rx, hx)  # one left column
+                self.assertGreater(hy, ry + rh - 1)  # recent recordings below the recording card
+                self.assertGreater(tx, rx + rw)  # transcript on the right
+                self.assertEqual(ty, ry)  # the right half starts at the top
+                self.assertGreaterEqual(th, (hy + hh) - ry - 2)  # and spans the left column's height
+                self.assertLess(abs(tw - rw), 40)  # two halves
+
+                window.resize(1010, 700)
+                self._settle()
+                self.assertEqual(window.overview_columns.direction(), QBoxLayout.Direction.TopToBottom)
+                self.assertGreater(box(transcript)[1], box(recent)[1])  # narrow: transcript goes below
+            finally:
+                window.close()
+
+
+class OrganizationSectionTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.application = QApplication.instance() or QApplication([])
+
+    def test_organization_section_guides_and_shows_counts(self):
+        from teams_lite.library_ui import COUNT_ROLE
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            storage.create_meeting('Suelta')
+            window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False))
+            window.timer.stop()
+            try:
+                admin = window.admin_page
+                self.assertFalse(admin.organization_empty.isHidden())
+                self.assertIn('Crea la primera', admin.organization_empty.text())
+                self.assertFalse(admin.project_empty.isHidden())
+                self.assertIn('Elige una organización', admin.project_empty.text())
+                self.assertEqual(admin.project_title.text(), 'Proyectos')
+                self.assertEqual(admin.summary.text(),
+                                 '0 organizaciones · 0 proyectos · 0 reuniones en organizaciones · 1 en el Cofre de reuniones')
+                for button in (admin.new_organization_button, admin.rename_organization_button,
+                               admin.delete_organization_button, admin.new_project_button,
+                               admin.rename_project_button, admin.delete_project_button):
+                    self.assertFalse(button.icon().isNull())
+
+                zenith = storage.create_organization('Zenith')
+                crm = storage.create_project(zenith, 'CRM')
+                storage.create_meeting('Kickoff', organization_id=zenith, project_id=crm)
+                storage.create_meeting('General', organization_id=zenith)
+                storage.create_organization('Acme')
+                admin.reload()
+
+                self.assertTrue(admin.organization_empty.isHidden())
+                names = [admin.organization_list.item(row).text() for row in range(admin.organization_list.count())]
+                self.assertEqual(names, ['Acme', 'Zenith'])
+                self.assertEqual(admin.organization_list.item(1).data(COUNT_ROLE), 2)
+                self.assertFalse(admin.organization_list.item(1).icon().isNull())
+                self.assertEqual(admin.summary.text(),
+                                 '2 organizaciones · 1 proyecto · 2 reuniones en organizaciones · 1 en el Cofre de reuniones')
+
+                admin.organization_list.setCurrentRow(1)
+                self.assertEqual(admin.project_title.text(), 'Proyectos de Zenith')
+                self.assertTrue(admin.project_empty.isHidden())
+                self.assertEqual(admin.project_list.item(0).text(), 'CRM')
+                self.assertEqual(admin.project_list.item(0).data(COUNT_ROLE), 1)
+
+                admin.organization_list.setCurrentRow(0)
+                self.assertEqual(admin.project_title.text(), 'Proyectos de Acme')
+                self.assertFalse(admin.project_empty.isHidden())
+                self.assertIn('Acme todavía no tiene proyectos', admin.project_empty.text())
+            finally:
+                window.close()
+
+
+class ScreenshotGalleryTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.application = QApplication.instance() or QApplication([])
+
+    def _wait(self, condition):
+        deadline = time.monotonic() + 3
+        while not condition() and time.monotonic() < deadline:
+            self.application.processEvents()
+            time.sleep(0.01)
+
+    def test_capturas_tab_shows_every_screenshot_and_opens_it(self):
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            meeting = storage.create_meeting('Con capturas')
+            storage.finish_meeting(meeting)
+            folder = Path(d) / meeting
+            (folder / 'moments').mkdir()
+            Image.new('RGB', (320, 180), (40, 90, 160)).save(folder / 'moments' / 'a.jpg')
+            (folder / 'moments.jsonl').write_text(
+                '{"offset_seconds": 3.0, "image": "moments/a.jpg", "note": "Demo"}\n', encoding='utf-8')
+            (folder / 'visual-frames').mkdir()
+            Image.new('RGB', (320, 180), (10, 10, 10)).save(folder / 'visual-frames' / 'teams-20261117T100000000000Z.png')
+            window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False))
+            window.timer.stop()
+            try:
+                window.open_meeting(meeting)
+                self.assertEqual(window.view_gallery_button.text(), 'Capturas')
+                window.view_gallery_button.click()
+                gallery = window.gallery
+                self.assertIs(window.transcript_stack.currentWidget(), window.gallery_page)
+                self.assertTrue(window.gallery_page.isAncestorOf(gallery))
+                self._wait(lambda: gallery.count() == 2 and not gallery.item(1).icon().isNull())
+
+                self.assertEqual([gallery.item(row).text() for row in range(gallery.count())],
+                                 ['00:00:03 · Demo', 'Hablante activo · 10:00:00 UTC'])
+                self.assertTrue(all(not gallery.item(row).icon().isNull() for row in range(gallery.count())))
+                self.assertIn('2 capturas', window.gallery_summary.text())
+                self.assertFalse(window.copy_button.isEnabled())
+
+                with mock.patch('teams_lite.app.QDesktopServices.openUrl') as open_url:
+                    gallery.itemActivated.emit(gallery.item(0))
+                opened = Path(open_url.call_args.args[0].toLocalFile())
+                self.assertEqual(opened.resolve(), (folder / 'moments' / 'a.jpg').resolve())
+            finally:
+                window.close()
+
+    def test_meeting_without_screenshots_says_so(self):
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            meeting = storage.create_meeting('Sin capturas')
+            storage.finish_meeting(meeting)
+            window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False))
+            window.timer.stop()
+            try:
+                window.open_meeting(meeting)
+                window.view_gallery_button.click()
+                self.assertEqual(window.gallery.count(), 0)
+                self.assertIn('no tiene capturas', window.gallery_summary.text())
+            finally:
+                window.close()
+
+
+class RecentRecordingsScopeTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.application = QApplication.instance() or QApplication([])
+
+    @staticmethod
+    def _listed(window):
+        return [window.table.item(row, 1).text() for row in range(window.table.rowCount())]
+
+    def _library(self, d):
+        storage = Storage(d)
+        zenith = storage.create_organization('Zenith')
+        crm = storage.create_project(zenith, 'CRM')
+        ids = {
+            'Suelta': storage.create_meeting('Suelta'),
+            'Kickoff': storage.create_meeting('Kickoff', organization_id=zenith, project_id=crm),
+            'General': storage.create_meeting('General', organization_id=zenith),
+        }
+        for meeting in ids.values():
+            storage.finish_meeting(meeting)
+        return storage, zenith, crm, ids
+
+    def test_recent_recordings_follow_the_project_chosen_for_recording(self):
+        with tempfile.TemporaryDirectory() as d:
+            storage, zenith, crm, _ = self._library(d)
+            window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False))
+            window.timer.stop()
+            try:
+                picker = window.placement_picker
+                self.assertEqual(self._listed(window), ['Suelta'])
+                self.assertEqual(window.history_scope.text(), 'Cofre de reuniones')
+                self.assertEqual(window.history_count.text(), '1')
+
+                picker.organization_combo.setCurrentIndex(picker.organization_combo.findData(zenith))
+                self.assertEqual(self._listed(window), ['General'])
+                self.assertEqual(window.history_scope.text(), 'Zenith › Sin proyecto')
+
+                picker.project_combo.setCurrentIndex(picker.project_combo.findData(crm))
+                self.assertEqual(self._listed(window), ['Kickoff'])
+                self.assertEqual(window.history_scope.text(), 'Zenith › CRM')
+            finally:
+                window.close()
+
+    def test_empty_project_says_so(self):
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            storage.create_meeting('Suelta')
+            empty = storage.create_organization('Vacía')
+            window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False))
+            window.timer.stop()
+            try:
+                picker = window.placement_picker
+                picker.organization_combo.setCurrentIndex(picker.organization_combo.findData(empty))
+                self.assertTrue(window.table.isHidden())
+                self.assertFalse(window.history_empty.isHidden())
+                self.assertIn('este proyecto', window.history_empty.text())
+            finally:
+                window.close()
+
+    def test_opening_or_moving_a_meeting_shows_it_in_its_project(self):
+        with tempfile.TemporaryDirectory() as d:
+            storage, zenith, crm, ids = self._library(d)
+            window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False))
+            window.timer.stop()
+            try:
+                window.open_meeting(ids['Kickoff'])
+                self.assertEqual(window.history_scope.text(), 'Zenith › CRM')
+                self.assertEqual(window._selected_meeting_id(), ids['Kickoff'])
+
+                window._choose_placement = lambda _meeting: (None, None)
+                window.move_meeting()
+                self.assertEqual(window.history_scope.text(), 'Cofre de reuniones')
+                self.assertEqual(sorted(self._listed(window)), ['Kickoff', 'Suelta'])
+                self.assertEqual(window._selected_meeting_id(), ids['Kickoff'])
+            finally:
+                window.close()
+
+
+class RenameMeetingUiTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.application = QApplication.instance() or QApplication([])
+
+    def test_rename_from_grabar_and_from_biblioteca(self):
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            meeting = storage.create_meeting('Reunión de Teams')
+            storage.finish_meeting(meeting)
+            window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False))
+            window.timer.stop()
+            window._show_error = mock.Mock()
+            try:
+                self.assertFalse(window.rename_button.isEnabled())
+                window.open_meeting(meeting)
+                self.assertTrue(window.rename_button.isEnabled())
+                asked = []
+                window._ask_meeting_title = lambda current: asked.append(current) or 'Kickoff CRM'
+                window.rename_button.click()
+
+                self.assertEqual(asked, ['Reunión de Teams'])
+                self.assertEqual(storage.get_meeting(meeting)['title'], 'Kickoff CRM')
+                self.assertEqual(window.table.item(window.table.currentRow(), 1).text(), 'Kickoff CRM')
+                self.assertEqual(window._selected_meeting_id(), meeting)
+                self.assertEqual(window.status_label.text(), 'Reunión renombrada.')
+
+                window._ask_meeting_title = lambda current: None  # cancelled
+                window.rename_button.click()
+                window._ask_meeting_title = lambda current: '   '  # rejected by storage
+                window.rename_button.click()
+                self.assertEqual(storage.get_meeting(meeting)['title'], 'Kickoff CRM')
+                window._show_error.assert_called_once()
+
+                window._ask_meeting_title = lambda current: 'Demo final'
+                window.preview_page.rename_meeting.emit(meeting)
+                self.assertEqual(storage.get_meeting(meeting)['title'], 'Demo final')
             finally:
                 window.close()
 

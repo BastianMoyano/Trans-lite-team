@@ -35,15 +35,18 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
     QHeaderView,
+    QInputDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListView,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QStackedWidget,
     QStyle,
     QStyledItemDelegate,
@@ -74,6 +77,7 @@ from .library_ui import (
 )
 from .chat_ui import ChatPanel
 from .minutes import CLI_LABELS, MinutesError, generate_minutes, load_minutes
+from .previews import meeting_screenshots
 from .moments import capture_moment, format_offset, load_moments, moments_for_minutes
 from .ocr import load_participants, merge_participants, read_teams_names
 from .sharing import PackageError, export_meeting, import_meeting, read_package, suggest_placement
@@ -181,6 +185,20 @@ QFrame#card {
 QLabel#sectionTitle {
     color: #F3F5F7;
     font-size: 16px;
+    font-weight: 600;
+}
+QLabel#adminSummary {
+    padding: 8px 12px;
+    background: #172A2A;
+    border: 1px solid #23413E;
+    border-radius: 8px;
+    color: #9EE6DA;
+    font-size: 12px;
+    font-weight: 600;
+}
+QLabel#historyScope {
+    color: #46C7B5;
+    font-size: 12px;
     font-weight: 600;
 }
 QLabel#sectionMeta, QLabel#fieldHint, QLabel#statusText {
@@ -545,6 +563,12 @@ _ICON_PATHS = {
         '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/>'
         '<path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/>'
     ),
+    "plus": '<path d="M12 5v14"/><path d="M5 12h14"/>',
+    "layers": (
+        '<polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/>'
+        '<polyline points="2 12 12 17 22 12"/>'
+    ),
+    "pencil": '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
     "folder": (
         '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4'
         'a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>'
@@ -948,12 +972,26 @@ class MainWindow(QMainWindow):
         layout.addLayout(self._build_header())
         layout.addWidget(self._build_update_banner())
         layout.addWidget(self._build_notice())
+        # Two halves: recording and recent recordings on the left, the transcript over the
+        # full height on the right. Narrow windows stack them (see resizeEvent).
+        self.recording_card = self._build_recording_card()
+        self.history_card = self._build_history_card()
+        self.transcript_card = self._build_transcript_card()
+        left_column = QWidget()
+        left_layout = QVBoxLayout(left_column)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(16)
+        left_layout.addWidget(self.recording_card)
+        left_layout.addWidget(self.history_card, 1)
         self.overview_columns = QBoxLayout(QBoxLayout.Direction.LeftToRight)
         self.overview_columns.setSpacing(16)
-        self.overview_columns.addWidget(self._build_recording_card(), 1)
-        self.overview_columns.addWidget(self._build_history_card(), 1)
-        layout.addLayout(self.overview_columns)
-        layout.addWidget(self._build_transcript_card(), 1)
+        for half in (left_column, self.transcript_card):
+            policy = half.sizePolicy()
+            policy.setHorizontalPolicy(QSizePolicy.Policy.Ignored)
+            half.setSizePolicy(policy)
+        self.overview_columns.addWidget(left_column, 1)
+        self.overview_columns.addWidget(self.transcript_card, 1)
+        layout.addLayout(self.overview_columns, 1)
         scroll.setWidget(content)
         self.recording_page = scroll
         self.preview_page = self._build_preview_page()
@@ -1023,6 +1061,9 @@ class MainWindow(QMainWindow):
         self.ocr_checkbox.toggled.connect(self._sync_ocr_button)
         self.table.itemSelectionChanged.connect(self.show_selected_transcript)
         self.delete_button.clicked.connect(self.delete_selected_meeting)
+        self.rename_button.clicked.connect(lambda: self.rename_meeting())
+        self.placement_picker.organization_combo.currentIndexChanged.connect(lambda _index: self._refresh())
+        self.placement_picker.project_combo.currentIndexChanged.connect(lambda _index: self._refresh())
         self.move_button.clicked.connect(lambda: self.move_meeting())
         self.export_button.clicked.connect(lambda: self.export_meeting())
         self.copy_button.clicked.connect(self.copy_transcript)
@@ -1034,6 +1075,7 @@ class MainWindow(QMainWindow):
         self.view_transcript_button.clicked.connect(lambda: self._set_view("transcript"))
         self.view_minutes_button.clicked.connect(lambda: self._set_view("minutes"))
         self.view_chat_button.clicked.connect(lambda: self._set_view("chat"))
+        self.view_gallery_button.clicked.connect(lambda: self._set_view("gallery"))
 
     def resizeEvent(self, event) -> None:
         """Stack overview cards when the window is too narrow to keep both readable."""
@@ -1064,13 +1106,20 @@ class MainWindow(QMainWindow):
             default_cli=self.config.minutes_cli,
         )
         page.open_meeting.connect(self.open_meeting)
+        page.rename_meeting.connect(self.rename_meeting)
         page.move_meeting.connect(self.move_meeting)
         page.export_meeting.connect(self.export_meeting)
         page.import_requested.connect(self.import_meeting_package)
         return page
 
     def _build_admin_page(self) -> QWidget:
-        page = AdminPage(self.store)
+        page = AdminPage(self.store, icons={
+            "organization": _render_svg("folder", COLORS["accent"], 16),
+            "project": _render_svg("layers", COLORS["text_soft"], 16),
+            "add": _render_svg("plus", COLORS["background"], 14),
+            "rename": _render_svg("pencil", COLORS["text_soft"], 14),
+            "delete": _render_svg("trash", COLORS["danger"], 14),
+        })
         page.changed.connect(self._library_changed)
         return page
 
@@ -1078,6 +1127,28 @@ class MainWindow(QMainWindow):
         self.placement_picker.reload()
         self.preview_page.refresh()
         self._refresh()
+
+    def _ask_meeting_title(self, current: str) -> str | None:
+        title, accepted = QInputDialog.getText(self, "Renombrar reunión", "Nuevo nombre de la reunión:", text=current)
+        return title if accepted else None
+
+    def rename_meeting(self, meeting_id: str | None = None) -> None:
+        """Changes the meeting title; its folder on disk keeps its name."""
+        meeting = self.store.get_meeting(meeting_id or self._selected_meeting_id() or "")
+        if meeting is None:
+            return
+        title = self._ask_meeting_title(meeting["title"])
+        if title is None:
+            return
+        try:
+            self.store.rename_meeting(meeting["id"], title)
+        except ValueError as exc:
+            self._show_error(f"No se pudo renombrar la reunión: {exc}")
+            return
+        self.preview_page.refresh()
+        self._refresh()
+        self._sync_chat_scope()
+        self._set_status("Reunión renombrada.", tone="success")
 
     def _choose_placement(self, meeting: dict) -> tuple[str | None, str | None] | None:
         dialog = MoveMeetingDialog(self.store, meeting["organization_id"], meeting["project_id"], self)
@@ -1099,8 +1170,13 @@ class MainWindow(QMainWindow):
         except ValueError as exc:
             self._show_error(f"No se pudo mover la reunión: {exc}")
             return
+        was_selected = meeting_id == self._selected_meeting_id()
         self.preview_page.refresh()
+        if was_selected:
+            self._show_placement_of(meeting_id)
         self._refresh()
+        if was_selected:
+            self._select_meeting_row(meeting_id)
         self._set_status("Reunión movida.", tone="success")
 
     def _choose_export(self, meeting: dict) -> tuple[Path, bool] | None:
@@ -1187,16 +1263,32 @@ class MainWindow(QMainWindow):
         self._refresh()
         self._set_status(message, tone="success")
 
-    def open_meeting(self, meeting_id: str) -> None:
-        """Shows a meeting picked in another section on the Teams Lite page."""
-        self.side_nav.setCurrentRow(0)
-        self._refresh()
+    def _placement_label(self) -> str:
+        picker = self.placement_picker
+        if picker.organization_id() is None:
+            return picker.organization_combo.currentText()
+        return f"{picker.organization_combo.currentText()} › {picker.project_combo.currentText()}"
+
+    def _show_placement_of(self, meeting_id: str) -> None:
+        """Recent recordings follow the meeting: switch to the project it is filed in."""
+        meeting = self.store.get_meeting(meeting_id)
+        if meeting is not None:
+            self.placement_picker.set_placement(meeting["organization_id"], meeting["project_id"])
+
+    def _select_meeting_row(self, meeting_id: str) -> None:
         for row in range(self.table.rowCount()):
             item = self.table.item(row, 0)
             if item is not None and item.data(Qt.ItemDataRole.UserRole) == meeting_id:
                 self.table.selectRow(row)
                 self.table.scrollToItem(item)
                 return
+
+    def open_meeting(self, meeting_id: str) -> None:
+        """Shows a meeting picked in another section on the Teams Lite page."""
+        self.side_nav.setCurrentRow(0)
+        self._show_placement_of(meeting_id)
+        self._refresh()
+        self._select_meeting_row(meeting_id)
 
     def _show_section(self, row: int) -> None:
         if row < 0:
@@ -1387,9 +1479,16 @@ class MainWindow(QMainWindow):
         title.setObjectName("sectionTitle")
         self.history_count = QLabel("0")
         self.history_count.setObjectName("sectionMeta")
-        heading.addWidget(title)
+        self.history_scope = QLabel()
+        self.history_scope.setObjectName("historyScope")
+        self.history_scope.setToolTip("Se muestran las reuniones de la organización y el proyecto elegidos para grabar")
+        titles = QVBoxLayout()
+        titles.setSpacing(2)
+        titles.addWidget(title)
+        titles.addWidget(self.history_scope)
+        heading.addLayout(titles)
         heading.addStretch(1)
-        heading.addWidget(self.history_count)
+        heading.addWidget(self.history_count, 0, Qt.AlignmentFlag.AlignTop)
         layout.addLayout(heading)
 
         # Columns 1-3 keep title/status/id as item data; column 0 renders the card row.
@@ -1414,11 +1513,46 @@ class MainWindow(QMainWindow):
         self.table.setMinimumHeight(260)
         layout.addWidget(self.table, 1)
 
-        self.history_empty = QLabel("Todavía no hay grabaciones.")
+        self.history_empty = QLabel("Todavía no hay grabaciones en este proyecto.")
         self.history_empty.setObjectName("emptyState")
         self.history_empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.history_empty, 1)
+        layout.addWidget(_divider())
+        layout.addLayout(self._build_meeting_actions())
         return card
+
+    def _build_meeting_actions(self) -> QVBoxLayout:
+        """Actions on the meeting selected in the list, right below it."""
+        self.rename_button = QPushButton("Renombrar")
+        self.move_button = QPushButton("Mover")
+        self.export_button = QPushButton("Exportar")
+        for button, icon, label, tip in (
+            (self.rename_button, "pencil", "Renombrar…", "Cambiar el nombre de la reunión"),
+            (self.move_button, "folder", "Mover a…", "Mover a otra organización o proyecto"),
+            (self.export_button, "share", "Exportar…", "Exportar la reunión en un paquete .zip para compartirla"),
+        ):
+            button.setObjectName("ghostButton")
+            set_button_icon(button, icon, COLORS["text_soft"], gap=6)
+            button.setAccessibleName(label)
+            button.setToolTip(tip)
+        self.delete_button = QPushButton("Eliminar reunión")
+        self.delete_button.setObjectName("deleteButton")
+        set_button_icon(self.delete_button, "trash", COLORS["danger"], gap=6)
+        actions = QVBoxLayout()
+        actions.setContentsMargins(8, 0, 8, 0)
+        actions.setSpacing(6)
+        first, second = QHBoxLayout(), QHBoxLayout()
+        first.setSpacing(6)
+        for button in (self.rename_button, self.move_button, self.export_button):
+            button.setEnabled(False)
+            first.addWidget(button)
+        first.addStretch(1)
+        self.delete_button.setEnabled(False)
+        second.addStretch(1)
+        second.addWidget(self.delete_button)
+        actions.addLayout(first)
+        actions.addLayout(second)
+        return actions
 
     def _build_transcript_card(self) -> QFrame:
         card, layout = _card()
@@ -1442,26 +1576,10 @@ class MainWindow(QMainWindow):
         self.download_button = QPushButton("Descargar")
         self.download_button.setObjectName("ghostButton")
         set_button_icon(self.download_button, "download", COLORS["text_soft"], gap=6)
-        self.move_button = QPushButton("Mover")
-        self.export_button = QPushButton("Exportar")
-        for button, icon, label, tip in (
-            (self.move_button, "folder", "Mover a…", "Mover a otra organización o proyecto"),
-            (self.export_button, "share", "Exportar…", "Exportar la reunión en un paquete .zip para compartirla"),
-        ):
-            button.setObjectName("ghostButton")
-            set_button_icon(button, icon, COLORS["text_soft"], gap=6)
-            button.setAccessibleName(label)
-            button.setToolTip(tip)
-        self.delete_button = QPushButton("Eliminar reunión")
-        self.delete_button.setObjectName("deleteButton")
-        set_button_icon(self.delete_button, "trash", COLORS["danger"], gap=6)
-        for button in (self.copy_button, self.download_button, self.move_button, self.export_button,
-                       self.delete_button):
+        for button in (self.copy_button, self.download_button):
             button.setEnabled(False)
-        for button in (self.copy_button, self.download_button, self.move_button, self.export_button):
             actions.addWidget(button)
         actions.addStretch(1)
-        actions.addWidget(self.delete_button)
         layout.addLayout(actions)
         self.transcript_attendees = QLabel()
         self.transcript_attendees.setObjectName("sectionMeta")
@@ -1478,13 +1596,20 @@ class MainWindow(QMainWindow):
         self.view_chat_button.setToolTip("Conversa con la IA sobre la minuta y la transcripción de esta reunión")
         self._view_group = QButtonGroup(self)
         self._view_group.setExclusive(True)
-        for button in (self.view_transcript_button, self.view_minutes_button, self.view_chat_button):
+        self.view_gallery_button = QPushButton("Capturas")
+        self.view_gallery_button.setToolTip("Todas las capturas de pantalla tomadas en esta reunión")
+        for button in (self.view_transcript_button, self.view_minutes_button, self.view_chat_button,
+                       self.view_gallery_button):
             button.setObjectName("segmentButton")
             button.setCheckable(True)
             self._view_group.addButton(button)
             toolbar.addWidget(button)
         self.view_transcript_button.setChecked(True)
         toolbar.addStretch(1)
+        layout.addLayout(toolbar)
+        minutes_row = QHBoxLayout()
+        minutes_row.setSpacing(8)
+        minutes_row.addStretch(1)
         self.minutes_cli_combo = QComboBox()
         self.minutes_cli_combo.setAccessibleName("CLI para la minuta y el chat")
         for cli, label in _CLI_LABELS.items():
@@ -1496,9 +1621,9 @@ class MainWindow(QMainWindow):
             "Envía la transcripción a la CLI elegida (sin herramientas ni acceso a archivos) "
             "y guarda la respuesta en minutes.md."
         )
-        toolbar.addWidget(self.minutes_cli_combo)
-        toolbar.addWidget(self.generate_minutes_button)
-        layout.addLayout(toolbar)
+        minutes_row.addWidget(self.minutes_cli_combo)
+        minutes_row.addWidget(self.generate_minutes_button)
+        layout.addLayout(minutes_row)
         layout.addWidget(_divider())
 
         self.transcript_stack = QStackedWidget()
@@ -1524,7 +1649,9 @@ class MainWindow(QMainWindow):
         self._row_fit_timer.setSingleShot(True)
         self._row_fit_timer.setInterval(80)
         self._row_fit_timer.timeout.connect(self._fit_transcript_rows)
-        self.transcript_table.viewport().installEventFilter(self)
+        # Kept as a plain reference: the filter must not touch the table while the window is torn down.
+        self._transcript_viewport = self.transcript_table.viewport()
+        self._transcript_viewport.installEventFilter(self)
         transcript_header = self.transcript_table.horizontalHeader()
         transcript_header.setVisible(False)
         transcript_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
@@ -1543,6 +1670,7 @@ class MainWindow(QMainWindow):
             self.store.root, cli_provider=lambda: str(self.minutes_cli_combo.currentData())
         )
         self.transcript_stack.addWidget(self.chat_panel)
+        self.transcript_stack.addWidget(self._build_gallery())
         # Copiar and Descargar follow the conversation while the Chat tab is visible.
         self.chat_panel.conversation_changed.connect(lambda: self._view == "chat" and self._render_view())
         layout.addWidget(self.transcript_stack, 1)
@@ -1884,12 +2012,16 @@ class MainWindow(QMainWindow):
 
     def _refresh(self) -> None:
         self._show_new_audio_warnings()
-        meetings = self.store.list_meetings()
-        signature = tuple(
+        all_meetings = self.store.list_meetings()
+        # Recent recordings belong to the organization/project chosen for recording.
+        placement = (self.placement_picker.organization_id(), self.placement_picker.project_id())
+        meetings = [m for m in all_meetings if (m["organization_id"], m["project_id"]) == placement]
+        signature = (placement, tuple(
             (meeting["id"], meeting["title"], meeting["status"], meeting["started_utc"],
              meeting["organization_id"], meeting["project_id"])
-            for meeting in meetings
-        )
+            for meeting in all_meetings
+        ))
+        self.history_scope.setText(self._placement_label())
         if signature == self._meetings_signature:
             return
         self._meetings_signature = signature
@@ -1944,6 +2076,7 @@ class MainWindow(QMainWindow):
     def show_selected_transcript(self) -> None:
         meeting_id = self._selected_meeting_id()
         self.delete_button.setEnabled(meeting_id is not None)
+        self.rename_button.setEnabled(meeting_id is not None)
         self.move_button.setEnabled(meeting_id is not None)
         self.export_button.setEnabled(meeting_id is not None)
         self._show_attendees(meeting_id)
@@ -1991,17 +2124,91 @@ class MainWindow(QMainWindow):
             moments = f" · {len(self._moments)} momento" + ("" if len(self._moments) == 1 else "s")
         self.transcript_meta.setText(f"{len(turns)} {noun} · {round(duration)} s{moments} · reunión {meeting_id[:8]}…")
 
+    def _build_gallery(self) -> QWidget:
+        self.gallery_page = QWidget()
+        layout = QVBoxLayout(self.gallery_page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        self.gallery_summary = QLabel()
+        self.gallery_summary.setObjectName("fieldHint")
+        self.gallery_summary.setWordWrap(True)
+        layout.addWidget(self.gallery_summary)
+        self.gallery = QListWidget()
+        self.gallery.setObjectName("previewGrid")
+        self.gallery.setViewMode(QListView.ViewMode.IconMode)
+        self.gallery.setResizeMode(QListView.ResizeMode.Adjust)
+        self.gallery.setMovement(QListView.Movement.Static)
+        self.gallery.setIconSize(THUMBNAIL_SIZE)
+        self.gallery.setGridSize(QSize(THUMBNAIL_SIZE.width() + 36, THUMBNAIL_SIZE.height() + 58))
+        self.gallery.setSpacing(8)
+        self.gallery.setWordWrap(True)
+        self.gallery.setFrameShape(QFrame.Shape.NoFrame)
+        self.gallery.itemActivated.connect(self._open_gallery_image)
+        layout.addWidget(self.gallery, 1)
+        self._gallery_pending: list[QListWidgetItem] = []
+        self._gallery_timer = QTimer(self)
+        self._gallery_timer.setInterval(0)
+        self._gallery_timer.timeout.connect(self._load_gallery_batch)
+        return self.gallery_page
+
+    def _populate_gallery(self) -> None:
+        """List every screenshot of the selected meeting; thumbnails load a few at a time."""
+        meeting_id = self._selected_meeting_id()  # re-listed each time: new moments appear while recording
+        self._gallery_timer.stop()
+        self.gallery.clear()
+        shots = meeting_screenshots(self.store.root / meeting_id) if meeting_id else []
+        placeholder = QIcon(self.preview_page.thumbnails.placeholder)
+        for shot in shots:
+            item = QListWidgetItem(placeholder, shot["label"])
+            item.setData(Qt.ItemDataRole.UserRole, str(shot["path"]))
+            item.setToolTip(f"{shot['label']} · doble clic para abrir")
+            item.setTextAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
+            self.gallery.addItem(item)
+        self._gallery_pending = [self.gallery.item(row) for row in range(self.gallery.count())]
+        if meeting_id is None:
+            self.gallery_summary.setText("Selecciona una reunión para ver sus capturas.")
+        elif not shots:
+            self.gallery_summary.setText(
+                "Esta reunión no tiene capturas. Usa \"Marcar momento\" mientras grabas para guardar la pantalla."
+            )
+        else:
+            moments = sum(1 for shot in shots if shot["kind"] == "moment")
+            noun = "captura" if len(shots) == 1 else "capturas"
+            self.gallery_summary.setText(
+                f"{len(shots)} {noun} · {moments} de momentos marcados · doble clic para abrir a tamaño completo"
+            )
+        if self._gallery_pending:
+            self._gallery_timer.start()
+
+    def _load_gallery_batch(self) -> None:
+        cache = self.preview_page.thumbnails
+        for _ in range(6):  # a few per tick keeps the window responsive with hundreds of frames
+            if not self._gallery_pending:
+                self._gallery_timer.stop()
+                return
+            item = self._gallery_pending.pop(0)
+            item.setIcon(QIcon(cache.pixmap(Path(item.data(Qt.ItemDataRole.UserRole)))))
+
+    def _open_gallery_image(self, item: QListWidgetItem) -> None:
+        path = Path(str(item.data(Qt.ItemDataRole.UserRole)))
+        if path.is_file():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+
     def _set_view(self, view: str) -> None:
         self._view = view
         self.view_transcript_button.setChecked(view == "transcript")
         self.view_minutes_button.setChecked(view == "minutes")
         self.view_chat_button.setChecked(view == "chat")
+        self.view_gallery_button.setChecked(view == "gallery")
         self._render_view()
 
     def _render_view(self) -> None:
         """Show the transcript, the minutes or the chat; Copiar and Descargar act on what is visible."""
         if self._view == "chat":
             self.transcript_stack.setCurrentWidget(self.chat_panel)
+        elif self._view == "gallery":
+            self._populate_gallery()
+            self.transcript_stack.setCurrentWidget(self.gallery_page)
         elif self._view == "minutes":
             if self._minutes:
                 self.minutes_view.setMarkdown(self._minutes)
@@ -2038,6 +2245,8 @@ class MainWindow(QMainWindow):
             self.generate_minutes_button.setText("Generar minuta")
 
     def _current_export(self) -> str:
+        if self._view == "gallery":
+            return ""  # images: open them with a double click instead
         if self._view == "chat":
             return self.chat_panel.export_text()
         if self._view == "minutes":
@@ -2126,7 +2335,7 @@ class MainWindow(QMainWindow):
         self.transcript_table.scrollToTop()
 
     def eventFilter(self, watched, event):  # noqa: N802 - Qt API
-        if watched is self.transcript_table.viewport() and event.type() == QEvent.Type.Resize:
+        if watched is getattr(self, "_transcript_viewport", None) and event.type() == QEvent.Type.Resize:
             self._row_fit_timer.start()  # recompute once the user stops resizing
         return super().eventFilter(watched, event)
 
@@ -2268,6 +2477,7 @@ class MainWindow(QMainWindow):
             return
         self.table.clearSelection()
         self.delete_button.setEnabled(False)
+        self.rename_button.setEnabled(False)
         self.move_button.setEnabled(False)
         self.export_button.setEnabled(False)
         self.transcript_meta.clear()

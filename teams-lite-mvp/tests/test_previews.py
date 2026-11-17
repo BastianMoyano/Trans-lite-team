@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from teams_lite.previews import meeting_thumbnail
+from teams_lite.previews import meeting_screenshots, meeting_thumbnail
 
 
 def _write_moments(meeting_dir, moments):
@@ -58,6 +58,45 @@ class MeetingThumbnailTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             self.assertIsNone(meeting_thumbnail(Path(d)))
             self.assertIsNone(meeting_thumbnail(Path(d) / 'missing'))
+
+
+class MeetingScreenshotsTests(unittest.TestCase):
+    def test_lists_marked_moments_by_time_then_active_speaker_frames(self):
+        with tempfile.TemporaryDirectory() as d:
+            meeting = Path(d) / 'meeting'
+            (meeting / 'moments').mkdir(parents=True)
+            for name in ('a.jpg', 'b.jpg'):
+                (meeting / 'moments' / name).write_bytes(b'jpg')
+            frames = meeting / 'visual-frames'
+            frames.mkdir()
+            (frames / 'teams-20261117T100500000000Z.png').write_bytes(b'png')
+            (frames / 'teams-20261117T100000000000Z.png').write_bytes(b'png')
+            (frames / '.teams-20261117T090000000000Z.part.png').write_bytes(b'partial')
+            (Path(d) / 'outside.jpg').write_bytes(b'jpg')
+            _write_moments(meeting, [
+                {'offset_seconds': 75.0, 'image': 'moments/b.jpg', 'note': 'Demo del CRM'},
+                {'offset_seconds': 3.0, 'image': 'moments/a.jpg', 'note': ''},
+                {'offset_seconds': 9.0, 'image': None},  # a moment without capture
+                {'offset_seconds': 12.0, 'image': 'moments/missing.jpg'},
+                {'offset_seconds': 15.0, 'image': '../outside.jpg'},
+            ])
+
+            shots = meeting_screenshots(meeting)
+
+            self.assertEqual([shot['path'] for shot in shots], [
+                meeting / 'moments' / 'a.jpg', meeting / 'moments' / 'b.jpg',
+                frames / 'teams-20261117T100000000000Z.png', frames / 'teams-20261117T100500000000Z.png',
+            ])
+            self.assertEqual([shot['kind'] for shot in shots], ['moment', 'moment', 'frame', 'frame'])
+            self.assertEqual([shot['label'] for shot in shots], [
+                '00:00:03', '00:01:15 · Demo del CRM', 'Hablante activo · 10:00:00 UTC', 'Hablante activo · 10:05:00 UTC',
+            ])
+            self.assertEqual(meeting_thumbnail(meeting), meeting / 'moments' / 'a.jpg')
+
+    def test_meeting_without_screenshots_lists_nothing(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(meeting_screenshots(Path(d)), [])
+            self.assertEqual(meeting_screenshots(Path(d) / 'missing'), [])
 
 
 if __name__ == '__main__':

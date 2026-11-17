@@ -147,8 +147,8 @@ While recording, "Marcar momento" (with an optional note) or the global hotkey *
 
 Ask Claude Code or Codex about what was said or decided, inside the app window; no terminal opens:
 
-- **One meeting**: the **Chat** tab next to *Transcripción* and *Minuta* talks about the selected meeting, with the CLI chosen in the selector next to *Generar minuta*.
-- **A project**: in Vista previa, open a project (or the Cofre de reuniones / Sin proyecto) and press **Conversar con IA**; the chat opens to the right of its meetings, with its own Claude/Codex selector.
+- **One meeting**: the **Chat con IA** view in Grabar, next to *Transcripción* and *Minuta*, talks about the selected meeting, with the CLI chosen in the selector next to *Generar minuta*.
+- **A project**: in Biblioteca, open a project (or the Cofre de reuniones / Sin proyecto) and press **Conversar con IA**; the chat opens to the right of its meetings, with its own Claude/Codex selector.
 
 Type a question and press Enter or *Enviar*; the answer appears in the panel while the app stays usable. Follow-up questions keep the context of the conversation. Each meeting and project keeps its own conversation while Teams Lite is open; **Nueva conversación** starts over. *Copiar* and *Descargar* in the Chat tab copy or save the conversation. Only meetings that already have minutes are included.
 
@@ -216,17 +216,18 @@ To publish an update, raise `version` in `pyproject.toml` and `__version__` in `
 
 The left menu has three sections:
 
-- **Teams Lite** records and shows transcripts. Before recording, choose an **Organización** and a **Proyecto**. With no organization chosen, the meeting goes to the **Cofre de reuniones**, the default place for unfiled meetings. The folder icon **Mover a…** (next to *Eliminar reunión*) files the selected meeting in another organization or project, or back in the Cofre.
-- **Vista previa** browses organizations, then their projects (plus *Sin proyecto*), then their meetings newest first. Each meeting shows a thumbnail: the first marked moment's screenshot, otherwise the first active-speaker frame, otherwise a placeholder. Organization and project cards use the newest meeting with a screenshot. Double-click a meeting to open it in Teams Lite; right-click or **Mover a…** to move it.
-- **Administrar** creates, renames and deletes organizations and projects. Names are unique, ignoring case (projects within their organization). Deleting an organization sends its meetings to the Cofre; deleting a project keeps its meetings in the organization without a project. Meetings are never deleted from here.
+- **Grabar** has two halves. On the left, **Nueva grabación** (title, **Organización** and **Proyecto**) and, below it, **Grabaciones recientes**, which lists only the meetings of the organization and project chosen for recording; its header names them. With no organization chosen, meetings go to the **Cofre de reuniones**, the default place for unfiled meetings. Under the list, **Renombrar**, **Mover**, **Exportar** and **Eliminar reunión** act on the selected meeting. Renaming changes only the title; the folder on disk keeps its name. On the right, the selected meeting over the full height, with the views *Transcripción*, *Minuta*, *Chat con IA* and **Capturas**. Windows narrower than 1120 px stack the halves.
+- **Capturas** shows every screenshot of the meeting: marked moments in time order (with their note), then the active-speaker frames. Thumbnails load a few at a time, so long meetings stay responsive; double-click one to open it full size.
+- **Biblioteca** browses organizations, then their projects (plus *Sin proyecto*), then their meetings newest first. Each meeting shows a thumbnail: the first marked moment's screenshot, otherwise the first active-speaker frame, otherwise a placeholder. Organization and project cards use the newest meeting with a screenshot. Double-click a meeting to open it in Grabar, which also switches *Grabaciones recientes* to its project; right-click to rename, move or export it.
+- **Organización** creates, renames and deletes organizations and projects. A summary shows how many organizations, projects and filed meetings there are and how many meetings wait in the Cofre. Each row shows its meeting count, the project column is titled with the selected organization, and empty lists say what to do next. Names are unique, ignoring case (projects within their organization). Deleting an organization sends its meetings to the Cofre; deleting a project keeps its meetings in the organization without a project. Meetings are never deleted from here.
 
 Filing is metadata only: a moved meeting keeps its folder under `data/`. Databases from earlier versions gain the new columns on first launch, and their meetings appear in the Cofre.
 
 ### Sharing meetings (export and import)
 
-The share icon next to *Eliminar reunión* (or right-click › **Exportar…** in Vista previa) saves the meeting as a `.zip` package. It holds the transcript, minutes, marked moments with their screenshots, attendees and the first active-speaker frame. **Incluir audio** is off by default; turn it on when the receiver should be able to transcribe again (a one-hour meeting adds several hundred MB).
+**Exportar** under *Grabaciones recientes* (or right-click › **Exportar…** in Biblioteca) saves the meeting as a `.zip` package. It holds the transcript, minutes, marked moments with their screenshots, attendees and the first active-speaker frame. **Incluir audio** is off by default; turn it on when the receiver should be able to transcribe again (a one-hour meeting adds several hundred MB).
 
-**Importar…** in Vista previa adds a package as a new meeting. The destination starts on the organization or project being browsed. At the top level it starts on the organization and project with the same names as the sender's, ignoring case, or on the Cofre when there is no match. The meeting keeps its original title, date and status, and importing the same package twice creates two meetings. Packages are checked before anything is written: a damaged package, one from a newer Teams Lite, or one with paths that leave the meeting folder is rejected and changes nothing.
+**Importar…** in Biblioteca adds a package as a new meeting. The destination starts on the organization or project being browsed. At the top level it starts on the organization and project with the same names as the sender's, ignoring case, or on the Cofre when there is no match. The meeting keeps its original title, date and status, and importing the same package twice creates two meetings. Packages are checked before anything is written: a damaged package, one from a newer Teams Lite, or one with paths that leave the meeting folder is rejected and changes nothing.
 
 Meeting data is stored under `data/<meeting-id>/`; metadata is in `data/meetings.sqlite3`. New meetings use a readable, unique folder name: local start date, hour and minute, then the title (for example `data/2026-11-13 07-44 Daily ventas/`). Characters Windows does not allow in names become `_`, the title is cut to 40 characters, and a second meeting with the same minute and title gets ` (2)`. Meetings recorded before this change keep their original folder.
 
@@ -254,9 +255,9 @@ src/teams_lite/
   app.py            PySide6 UI and background orchestration
   audio.py          microphone/loopback capture and segment rotation
   storage.py        SQLite schema, organizations/projects and interrupted-segment recovery
-  library_ui.py     organization/project picker, Vista previa and Administrar pages
+  library_ui.py     organization/project picker, Biblioteca and Organización pages
   chat.py           chat workspace and multi-turn Claude/Codex sessions
-  chat_ui.py        chat panel shown in Teams Lite and Vista previa
+  chat_ui.py        chat panel shown in Grabar and Biblioteca
   previews.py       picks the screenshot that represents a meeting
   sharing.py        meeting export/import packages (.zip)
   transcription.py  CPU ONNX transcription and timestamped exports
