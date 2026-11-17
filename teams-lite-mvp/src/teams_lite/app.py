@@ -78,6 +78,7 @@ from .library_ui import (
 from .chat_ui import ChatPanel
 from .minutes import CLI_LABELS, MinutesError, generate_minutes, load_minutes
 from .previews import meeting_screenshots
+from .mascot import load_mascot_settings, resolve_placement
 from .moments import capture_moment, format_offset, load_moments, moments_for_minutes
 from .ocr import load_participants, merge_participants, read_teams_names
 from .sharing import PackageError, export_meeting, import_meeting, read_package, suggest_placement
@@ -1798,14 +1799,29 @@ class MainWindow(QMainWindow):
         self.stop_button.setEnabled(recording and not finalizing)
 
     def start_recording(self) -> None:
+        """Record with the title, organization and project chosen in the recording card."""
+        self._start_recording(
+            self.title_input.text().strip() or "Reunión de Teams",
+            self.placement_picker.organization_id(),
+            self.placement_picker.project_id(),
+        )
+
+    def quick_start_recording(self) -> None:
+        """Record at once with the mascot defaults: no title, organization or project to choose."""
         if self.recorder is not None:
             return
+        settings = load_mascot_settings(self.store.root)
+        organization_id, project_id, problem = resolve_placement(self.store, settings)
+        # Recent recordings follow the project being recorded.
+        self.placement_picker.set_placement(organization_id, project_id)
+        if self._start_recording(settings.title, organization_id, project_id) and problem:
+            self._set_status(f"Grabando. {problem}", tone="warning")
+
+    def _start_recording(self, title: str, organization_id: str | None, project_id: str | None) -> bool:
+        if self.recorder is not None:
+            return False
         try:
-            meeting_id = self.store.create_meeting(
-                self.title_input.text().strip() or "Reunión de Teams",
-                organization_id=self.placement_picker.organization_id(),
-                project_id=self.placement_picker.project_id(),
-            )
+            meeting_id = self.store.create_meeting(title, organization_id=organization_id, project_id=project_id)
             recording_origin = time.monotonic()
             recorder = Recorder(
                 self.store,
@@ -1816,7 +1832,7 @@ class MainWindow(QMainWindow):
             recorder.start()
         except Exception as exc:
             self._show_error(f"No se pudo iniciar la grabación: {exc}")
-            return
+            return False
         self.meeting_id = meeting_id
         self.recorder = recorder
         self._recording_origin = recording_origin
@@ -1843,6 +1859,7 @@ class MainWindow(QMainWindow):
         else:
             self._set_status(f"Grabando solo audio, sin hablante visual. {visual_problem}", tone="warning")
         self._refresh()
+        return True
 
     def stop_recording(self) -> None:
         if self.recorder is None or self.meeting_id is None:

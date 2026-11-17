@@ -286,6 +286,57 @@ class _FakeRecorder:
         self.store.finish_meeting(self.meeting_id)
 
 
+class QuickStartTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.application = QApplication.instance() or QApplication([])
+
+    _close = lambda self, window: MomentHotkeyTests._close(self, window)
+
+    def _window(self, d):
+        window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False, ocr_enabled=False))
+        window.timer.stop()
+        window._show_error = mock.Mock(side_effect=AssertionError('no dialog expected'))
+        return window
+
+    def test_quick_start_records_at_once_with_the_defaults(self):
+        from teams_lite.mascot import MascotSettings, save_mascot_settings
+        with tempfile.TemporaryDirectory() as d, mock.patch('teams_lite.app.Recorder', _FakeRecorder):
+            storage = Storage(d)
+            zenith = storage.create_organization('Zenith')
+            crm = storage.create_project(zenith, 'CRM')
+            save_mascot_settings(d, MascotSettings(title='Daily ventas', organization_id=zenith, project_id=crm))
+            window = self._window(d)
+            try:
+                window.title_input.setText('Título escrito a mano')
+                window.quick_start_recording()
+
+                self.assertIsNotNone(window.recorder)
+                meeting = storage.get_meeting(window.meeting_id)
+                self.assertEqual((meeting['title'], meeting['organization_id'], meeting['project_id']),
+                                 ('Daily ventas', zenith, crm))
+                self.assertEqual(window.title_input.text(), 'Título escrito a mano')  # the form is untouched
+                self.assertEqual(window.history_scope.text(), 'Zenith › CRM')  # recent list shows it
+                window.quick_start_recording()  # already recording: nothing new starts
+                self.assertEqual(len(storage.list_meetings()), 1)
+            finally:
+                self._close(window)
+
+    def test_missing_default_organization_records_in_the_vault_and_says_so(self):
+        from teams_lite.mascot import MascotSettings, save_mascot_settings
+        with tempfile.TemporaryDirectory() as d, mock.patch('teams_lite.app.Recorder', _FakeRecorder):
+            Storage(d)
+            save_mascot_settings(d, MascotSettings(organization_id='deleted-org'))
+            window = self._window(d)
+            try:
+                window.quick_start_recording()
+                meeting = window.store.get_meeting(window.meeting_id)
+                self.assertEqual((meeting['organization_id'], meeting['project_id']), (None, None))
+                self.assertIn('Cofre de reuniones', window.status_label.text())
+            finally:
+                self._close(window)
+
+
 class MomentHotkeyTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

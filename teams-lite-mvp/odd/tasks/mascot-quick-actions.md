@@ -5,12 +5,12 @@ Branch: feat/mascot-quick-actions · Delivery: ask-on-risk · Test runner: `.ven
 ## Specs
 - S1: "el capturar scrennshot no esta funcionando crtl+alt+m" — answer: "Sí, estaba grabando". Not reproduced (see L2). Scope: while recording, if Ctrl+Alt+M cannot be registered the app retries until it can, and each recording logs whether the hotkey was ready, unavailable or pressed, so the next failure explains itself. Assumption: the hotkey stays registered only while recording (holding it all the time would steal Ctrl+Alt+M from other apps such as Word).
 - S2: "podemos hacer como una mascota de gpt que tenga los accesos rapido" — a floating mascot, always on top (over Teams), draggable, that remembers its position. Answer on its actions: "Grabar/Detener, Captura y OCR (Recommended)": Grabar/Detener, Captura (marks a moment with a screenshot, like Ctrl+Alt+M) and OCR (reads the attendees). Captura and OCR work while recording. Double click opens Teams Lite.
-- S3: "que inciar reunion de una sin que pregunta el nombre,el proyecto o organizacion" — Grabar in the mascot starts recording immediately with the defaults; no dialog. Assumption: if the default organization or project no longer exists, the meeting goes to the Cofre and the status says so.
+- S3: "que inciar reunion de una sin que pregunta el nombre,el proyecto o organizacion" — Grabar in the mascot starts recording immediately with the defaults; no dialog. Assumption: if the default organization no longer exists the meeting goes to the Cofre; if only the default project is gone it stays in the organization without a project; the status says so either way.
 - S4: "eso lo puede configurar en la seccion de mascota el por defecto" — a "Mascota" section in the side menu sets the default title, organization and project, and whether the mascot is shown. Assumption: settings live in `data/mascot.json`; they apply right away.
 
 ## Tasks
 - T1 [S1] inline — hotkey retry while recording + events moment_hotkey_ready / moment_hotkey_unavailable / moment_hotkey_pressed — done, RED (no retry timer, no events) → GREEN 2; tests stop recording before closing so a RED fails instead of hanging on the close confirmation
-- T2 [S3,S4] inline — mascot settings (load/save, validation) and quick start with defaults — pending
+- T2 [S3,S4] inline — mascot settings (load/save, validation) and quick start with defaults — done, RED (no module) → GREEN 6; start_recording and quick_start_recording share _start_recording; quick start moves the recording card placement so the recent list shows it
 - T3 [S2,S4] inline — mascot widget, Mascota section, wiring to recording, capture and OCR — pending
 - T4 [S1-S4] inline — README — pending
 
