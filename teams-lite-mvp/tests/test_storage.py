@@ -1,3 +1,4 @@
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -120,5 +121,158 @@ class StorageTests(unittest.TestCase):
 
             self.assertIn(meeting, {row['id'] for row in storage.list_meetings()})
             self.assertTrue(marker.is_file())
+
+class LibraryTests(unittest.TestCase):
+    def test_existing_database_is_migrated_and_old_meetings_land_in_the_vault(self):
+        with tempfile.TemporaryDirectory() as d:
+            legacy = sqlite3.connect(Path(d) / 'meetings.sqlite3')
+            legacy.execute(
+                'CREATE TABLE meetings (id TEXT PRIMARY KEY, title TEXT NOT NULL, started_utc TEXT NOT NULL, '
+                'ended_utc TEXT, status TEXT NOT NULL)')
+            legacy.execute("INSERT INTO meetings VALUES ('old','Old','2026-01-01T00:00:00+00:00',"
+                           "'2026-01-01T01:00:00+00:00','completed')")
+            legacy.commit()
+            legacy.close()
+
+            Storage(d)
+            storage = Storage(d)  # opening twice must not fail: the migration is idempotent
+
+            [meeting] = storage.list_meetings()
+            self.assertEqual(meeting['title'], 'Old')
+            self.assertEqual(meeting['status'], 'completed')
+            self.assertIsNone(meeting['organization_id'])
+            self.assertIsNone(meeting['project_id'])
+            self.assertEqual([row['id'] for row in storage.list_meetings(organization_id=None)], ['old'])
+
+    def test_meeting_without_placement_goes_to_the_vault(self):
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            meeting = storage.create_meeting('loose')
+            storage.create_organization('Zenith')
+
+            self.assertEqual([row['id'] for row in storage.list_meetings(organization_id=None)], [meeting])
+
+    def test_organization_names_are_required_and_unique_ignoring_case(self):
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            zenith = storage.create_organization('  Zenith  ')
+            with self.assertRaisesRegex(ValueError, 'Ya existe'):
+                storage.create_organization('zenith')
+            with self.assertRaisesRegex(ValueError, 'nombre'):
+                storage.create_organization('   ')
+            other = storage.create_organization('Acme')
+            with self.assertRaisesRegex(ValueError, 'Ya existe'):
+                storage.rename_organization(other, 'ZENITH')
+            storage.rename_organization(zenith, 'Zenith Consulting')
+
+            self.assertEqual([org['name'] for org in storage.list_organizations()], ['Acme', 'Zenith Consulting'])
+
+    def test_project_names_are_unique_per_organization(self):
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            zenith = storage.create_organization('Zenith')
+            acme = storage.create_organization('Acme')
+            storage.create_project(zenith, 'CRM')
+            with self.assertRaisesRegex(ValueError, 'Ya existe'):
+                storage.create_project(zenith, 'crm')
+            storage.create_project(acme, 'CRM')
+            with self.assertRaisesRegex(ValueError, 'Organización desconocida'):
+                storage.create_project('missing', 'CRM')
+
+            self.assertEqual([project['name'] for project in storage.list_projects(zenith)], ['CRM'])
+            self.assertEqual([project['name'] for project in storage.list_projects(acme)], ['CRM'])
+
+    def test_meetings_are_filed_by_organization_and_project_newest_first(self):
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            zenith = storage.create_organization('Zenith')
+            crm = storage.create_project(zenith, 'CRM')
+            moments = iter(['2026-01-01T09:00:00+00:00', '2026-01-02T09:00:00+00:00', '2026-01-03T09:00:00+00:00'])
+            with mock.patch('teams_lite.storage.utc_now', side_effect=lambda: next(moments)):
+                first = storage.create_meeting('first', organization_id=zenith, project_id=crm)
+                loose = storage.create_meeting('no project', organization_id=zenith)
+                second = storage.create_meeting('second', organization_id=zenith, project_id=crm)
+
+            self.assertEqual([row['id'] for row in storage.list_meetings(project_id=crm)], [second, first])
+            self.assertEqual([row['id'] for row in storage.list_meetings(organization_id=zenith, project_id=None)],
+                             [loose])
+            self.assertEqual([row['id'] for row in storage.list_meetings(organization_id=zenith)],
+                             [second, loose, first])
+            self.assertEqual(storage.list_meetings(organization_id=None), [])
+            [organization] = storage.list_organizations()
+            self.assertEqual(organization['meeting_count'], 3)
+            [project] = storage.list_projects(zenith)
+            self.assertEqual(project['meeting_count'], 2)
+
+    def test_project_must_belong_to_the_chosen_organization(self):
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            zenith = storage.create_organization('Zenith')
+            acme = storage.create_organization('Acme')
+            acme_project = storage.create_project(acme, 'Web')
+            meeting = storage.create_meeting('m')
+
+            with self.assertRaisesRegex(ValueError, 'no pertenece'):
+                storage.move_meeting(meeting, zenith, acme_project)
+            with self.assertRaisesRegex(ValueError, 'no pertenece'):
+                storage.move_meeting(meeting, None, acme_project)
+            with self.assertRaisesRegex(ValueError, 'no pertenece'):
+                storage.create_meeting('bad', organization_id=zenith, project_id=acme_project)
+            with self.assertRaisesRegex(ValueError, 'Reunión desconocida'):
+                storage.move_meeting('missing', acme, acme_project)
+
+            self.assertEqual([row['title'] for row in storage.list_meetings()], ['m'])
+            self.assertEqual([row['id'] for row in storage.list_meetings(organization_id=None)], [meeting])
+
+    def test_move_meeting_between_projects_organizations_and_the_vault(self):
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            zenith = storage.create_organization('Zenith')
+            crm = storage.create_project(zenith, 'CRM')
+            meeting = storage.create_meeting('m')
+            folder = Path(d) / meeting
+
+            storage.move_meeting(meeting, zenith, crm)
+            self.assertEqual([row['id'] for row in storage.list_meetings(project_id=crm)], [meeting])
+            storage.move_meeting(meeting, zenith, None)
+            self.assertEqual([row['id'] for row in storage.list_meetings(organization_id=zenith, project_id=None)],
+                             [meeting])
+            storage.move_meeting(meeting, None, None)
+            self.assertEqual([row['id'] for row in storage.list_meetings(organization_id=None)], [meeting])
+            self.assertTrue(folder.is_dir())  # metadata only: the folder never moves
+
+    def test_deleting_an_organization_returns_its_meetings_to_the_vault(self):
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            zenith = storage.create_organization('Zenith')
+            crm = storage.create_project(zenith, 'CRM')
+            filed = storage.create_meeting('filed', organization_id=zenith, project_id=crm)
+            acme = storage.create_organization('Acme')
+            kept = storage.create_meeting('kept', organization_id=acme)
+
+            storage.delete_organization(zenith)
+
+            self.assertEqual([org['name'] for org in storage.list_organizations()], ['Acme'])
+            self.assertEqual(storage.list_projects(zenith), [])
+            [vault] = storage.list_meetings(organization_id=None)
+            self.assertEqual((vault['id'], vault['project_id']), (filed, None))
+            self.assertEqual([row['id'] for row in storage.list_meetings(organization_id=acme)], [kept])
+
+    def test_deleting_a_project_keeps_its_meetings_in_the_organization(self):
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            zenith = storage.create_organization('Zenith')
+            crm = storage.create_project(zenith, 'CRM')
+            web = storage.create_project(zenith, 'Web')
+            filed = storage.create_meeting('filed', organization_id=zenith, project_id=crm)
+            storage.rename_project(web, 'Portal')
+            with self.assertRaisesRegex(ValueError, 'Ya existe'):
+                storage.rename_project(web, 'crm')
+
+            storage.delete_project(crm)
+
+            self.assertEqual([project['name'] for project in storage.list_projects(zenith)], ['Portal'])
+            self.assertEqual([row['id'] for row in storage.list_meetings(organization_id=zenith, project_id=None)],
+                             [filed])
 
 if __name__ == '__main__': unittest.main()
