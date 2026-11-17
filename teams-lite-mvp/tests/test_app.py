@@ -937,5 +937,75 @@ class VisualFailureDuringRecordingTests(unittest.TestCase):
                 window.close()
 
 
+class LibraryUiTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.application = QApplication.instance() or QApplication([])
+
+    _wait_until_stopped = OcrAttendeeTests._wait_until_stopped
+
+    def test_side_menu_switches_between_sections(self):
+        with tempfile.TemporaryDirectory() as d:
+            window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False))
+            window.timer.stop()
+            try:
+                labels = [window.side_nav.item(row).text() for row in range(window.side_nav.count())]
+                self.assertEqual(labels, ['Teams Lite', 'Vista previa', 'Administrar'])
+                self.assertIs(window.pages.currentWidget(), window.recording_page)
+                self.assertTrue(window.recording_page.isAncestorOf(window.start_button))
+
+                window.side_nav.setCurrentRow(1)
+                self.assertIs(window.pages.currentWidget(), window.preview_page)
+                window.side_nav.setCurrentRow(2)
+                self.assertIs(window.pages.currentWidget(), window.admin_page)
+                window.side_nav.setCurrentRow(0)
+                self.assertIs(window.pages.currentWidget(), window.recording_page)
+            finally:
+                window.close()
+
+    def test_recording_without_a_choice_goes_to_the_meeting_vault(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch("teams_lite.app.Recorder", _FakeRecorder):
+            storage = Storage(d)
+            storage.create_project(storage.create_organization('Zenith'), 'CRM')
+            window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False, ocr_enabled=False))
+            window.timer.stop()
+            try:
+                picker = window.placement_picker
+                self.assertEqual(picker.organization_combo.currentText(), 'Cofre de reuniones')
+                self.assertEqual(picker.organization_combo.itemText(1), 'Zenith')
+                self.assertFalse(picker.project_combo.isEnabled())
+
+                window.start_recording()
+                [meeting] = storage.list_meetings()
+                self.assertEqual((meeting['organization_id'], meeting['project_id']), (None, None))
+                window.stop_recording()
+                self._wait_until_stopped(window)
+            finally:
+                window.close()
+
+    def test_recording_is_filed_in_the_chosen_organization_and_project(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch("teams_lite.app.Recorder", _FakeRecorder):
+            storage = Storage(d)
+            zenith = storage.create_organization('Zenith')
+            crm = storage.create_project(zenith, 'CRM')
+            window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False, ocr_enabled=False))
+            window.timer.stop()
+            try:
+                picker = window.placement_picker
+                picker.organization_combo.setCurrentIndex(picker.organization_combo.findData(zenith))
+                self.assertTrue(picker.project_combo.isEnabled())
+                self.assertEqual([picker.project_combo.itemText(i) for i in range(picker.project_combo.count())],
+                                 ['Sin proyecto', 'CRM'])
+                picker.project_combo.setCurrentIndex(picker.project_combo.findData(crm))
+
+                window.start_recording()
+                [meeting] = storage.list_meetings()
+                self.assertEqual((meeting['organization_id'], meeting['project_id']), (zenith, crm))
+                window.stop_recording()
+                self._wait_until_stopped(window)
+            finally:
+                window.close()
+
+
 if __name__ == '__main__':
     unittest.main()

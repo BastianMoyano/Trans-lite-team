@@ -36,6 +36,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -60,6 +62,7 @@ from .hotkey import (
     register_moment_hotkey,
     unregister_moment_hotkey,
 )
+from .library_ui import PlacementPicker
 from .minutes import MinutesError, generate_minutes, load_minutes
 from .moments import capture_moment, format_offset, load_moments, moments_for_minutes
 from .ocr import load_participants, merge_participants, read_teams_names
@@ -290,6 +293,26 @@ QTableWidget#transcriptTable::item:selected {
     background: #232323;
     color: #EDEDED;
 }
+QListWidget#sideNav {
+    background: #101010;
+    border: none;
+    border-right: 1px solid #2E2E2E;
+    padding: 18px 10px;
+    color: #D4D4D4;
+    font-size: 14px;
+    outline: none;
+}
+QListWidget#sideNav::item {
+    padding: 0 10px;
+    border-radius: 8px;
+}
+QListWidget#sideNav::item:selected {
+    background: #232323;
+    color: #EDEDED;
+}
+QListWidget#sideNav::item:hover:!selected {
+    background: #1A1A1A;
+}
 QLabel#emptyState {
     color: #6B6B6B;
     font-size: 13px;
@@ -409,6 +432,14 @@ _ICON_PATHS = {
         '<polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>'
     ),
     "flag": '<path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><path d="M4 22v-7"/>',
+    "image": (
+        '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/>'
+        '<path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/>'
+    ),
+    "folder": (
+        '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4'
+        'a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>'
+    ),
     "trash": (
         '<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/>'
         '<path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>'
@@ -812,7 +843,35 @@ class MainWindow(QMainWindow):
         layout.addLayout(columns)
         layout.addWidget(self._build_transcript_card(), 1)
         scroll.setWidget(content)
-        self.setCentralWidget(scroll)
+        self.recording_page = scroll
+        self.preview_page = self._build_preview_page()
+        self.admin_page = self._build_admin_page()
+
+        self.pages = QStackedWidget()
+        self.side_nav = QListWidget()
+        self.side_nav.setObjectName("sideNav")
+        self.side_nav.setFixedWidth(190)
+        self.side_nav.setFrameShape(QFrame.Shape.NoFrame)
+        self.side_nav.setIconSize(QSize(16, 16))
+        for label, icon, page in (
+            ("Teams Lite", "app", self.recording_page),
+            ("Vista previa", "image", self.preview_page),
+            ("Administrar", "folder", self.admin_page),
+        ):
+            item = QListWidgetItem(QIcon(_render_svg(icon, COLORS["text_soft"], 16)), label)
+            item.setSizeHint(QSize(0, 40))
+            self.side_nav.addItem(item)
+            self.pages.addWidget(page)
+        self.side_nav.currentRowChanged.connect(self._show_section)
+        self.side_nav.setCurrentRow(0)
+        shell = QWidget()
+        shell.setObjectName("pageContent")
+        shell_layout = QHBoxLayout(shell)
+        shell_layout.setContentsMargins(0, 0, 0, 0)
+        shell_layout.setSpacing(0)
+        shell_layout.addWidget(self.side_nav)
+        shell_layout.addWidget(self.pages, 1)
+        self.setCentralWidget(shell)
 
         self.start_button.clicked.connect(self.start_recording)
         self.stop_button.clicked.connect(self.stop_recording)
@@ -828,6 +887,16 @@ class MainWindow(QMainWindow):
         self.transcript_table.cellDoubleClicked.connect(self._open_moment_image)
         self.view_transcript_button.clicked.connect(lambda: self._set_view("transcript"))
         self.view_minutes_button.clicked.connect(lambda: self._set_view("minutes"))
+
+    def _build_preview_page(self) -> QWidget:
+        return QWidget()
+
+    def _build_admin_page(self) -> QWidget:
+        return QWidget()
+
+    def _show_section(self, row: int) -> None:
+        if row >= 0:
+            self.pages.setCurrentIndex(row)
 
     def _build_header(self) -> QHBoxLayout:
         header = QHBoxLayout()
@@ -937,6 +1006,8 @@ class MainWindow(QMainWindow):
         self.title_input.setPlaceholderText("Escribe un título para la reunión")
         self.title_input.setAccessibleName("Título de la reunión")
         layout.addWidget(self.title_input)
+        self.placement_picker = PlacementPicker(self.store)
+        layout.addWidget(self.placement_picker)
 
         self.start_button = QPushButton("Iniciar grabación")
         self.start_button.setObjectName("primaryButton")
@@ -1237,7 +1308,11 @@ class MainWindow(QMainWindow):
         if self.recorder is not None:
             return
         try:
-            meeting_id = self.store.create_meeting(self.title_input.text().strip() or "Reunión de Teams")
+            meeting_id = self.store.create_meeting(
+                self.title_input.text().strip() or "Reunión de Teams",
+                organization_id=self.placement_picker.organization_id(),
+                project_id=self.placement_picker.project_id(),
+            )
             recording_origin = time.monotonic()
             recorder = Recorder(
                 self.store,
