@@ -14,7 +14,7 @@ Branch: feat/workspace-usability · Delivery: ask-on-risk · Test runner: `.venv
 - T2 [S1] inline — recent recordings filtered by the recording card placement — done, RED 3 → GREEN 3; opening or moving the selected meeting switches the list to its project
 - T3 [S3] inline — two-column Grabar layout — done, RED (no recording_card) → GREEN layout test; meeting actions moved under the recent list, views and minutes controls on two rows, equal halves (Ignored horizontal policy); resize test starts at 1200 px (two-column mode); eventFilter no longer touches a deleted table on close
 - T4 [S2] inline — "Capturas" gallery tab — done, RED 2+2 → GREEN; previews.meeting_screenshots (moments by time, then active-speaker frames; unsafe or missing images skipped) also backs meeting_thumbnail; thumbnails load 6 per timer tick; double click opens the image
-- T5 [S4] inline — Organización visual pass — pending
+- T5 [S4] inline — Organización visual pass — done, RED (no COUNT_ROLE) → GREEN; summary line, title + actions with icons above each list, rows with icon and meeting count (delegate; row text stays the name), "Proyectos de <org>", empty-state guidance; offscreen capture checked
 - T6 [S1-S5] inline — README — pending
 
 ## Log

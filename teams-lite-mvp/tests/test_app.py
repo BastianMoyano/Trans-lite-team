@@ -1472,6 +1472,61 @@ class WorkspaceLayoutTests(unittest.TestCase):
                 window.close()
 
 
+class OrganizationSectionTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.application = QApplication.instance() or QApplication([])
+
+    def test_organization_section_guides_and_shows_counts(self):
+        from teams_lite.library_ui import COUNT_ROLE
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            storage.create_meeting('Suelta')
+            window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False))
+            window.timer.stop()
+            try:
+                admin = window.admin_page
+                self.assertFalse(admin.organization_empty.isHidden())
+                self.assertIn('Crea la primera', admin.organization_empty.text())
+                self.assertFalse(admin.project_empty.isHidden())
+                self.assertIn('Elige una organización', admin.project_empty.text())
+                self.assertEqual(admin.project_title.text(), 'Proyectos')
+                self.assertEqual(admin.summary.text(),
+                                 '0 organizaciones · 0 proyectos · 0 reuniones en organizaciones · 1 en el Cofre de reuniones')
+                for button in (admin.new_organization_button, admin.rename_organization_button,
+                               admin.delete_organization_button, admin.new_project_button,
+                               admin.rename_project_button, admin.delete_project_button):
+                    self.assertFalse(button.icon().isNull())
+
+                zenith = storage.create_organization('Zenith')
+                crm = storage.create_project(zenith, 'CRM')
+                storage.create_meeting('Kickoff', organization_id=zenith, project_id=crm)
+                storage.create_meeting('General', organization_id=zenith)
+                storage.create_organization('Acme')
+                admin.reload()
+
+                self.assertTrue(admin.organization_empty.isHidden())
+                names = [admin.organization_list.item(row).text() for row in range(admin.organization_list.count())]
+                self.assertEqual(names, ['Acme', 'Zenith'])
+                self.assertEqual(admin.organization_list.item(1).data(COUNT_ROLE), 2)
+                self.assertFalse(admin.organization_list.item(1).icon().isNull())
+                self.assertEqual(admin.summary.text(),
+                                 '2 organizaciones · 1 proyecto · 2 reuniones en organizaciones · 1 en el Cofre de reuniones')
+
+                admin.organization_list.setCurrentRow(1)
+                self.assertEqual(admin.project_title.text(), 'Proyectos de Zenith')
+                self.assertTrue(admin.project_empty.isHidden())
+                self.assertEqual(admin.project_list.item(0).text(), 'CRM')
+                self.assertEqual(admin.project_list.item(0).data(COUNT_ROLE), 1)
+
+                admin.organization_list.setCurrentRow(0)
+                self.assertEqual(admin.project_title.text(), 'Proyectos de Acme')
+                self.assertFalse(admin.project_empty.isHidden())
+                self.assertIn('Acme todavía no tiene proyectos', admin.project_empty.text())
+            finally:
+                window.close()
+
+
 class ScreenshotGalleryTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

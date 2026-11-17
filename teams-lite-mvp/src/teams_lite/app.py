@@ -187,6 +187,15 @@ QLabel#sectionTitle {
     font-size: 16px;
     font-weight: 600;
 }
+QLabel#adminSummary {
+    padding: 8px 12px;
+    background: #172A2A;
+    border: 1px solid #23413E;
+    border-radius: 8px;
+    color: #9EE6DA;
+    font-size: 12px;
+    font-weight: 600;
+}
 QLabel#historyScope {
     color: #46C7B5;
     font-size: 12px;
@@ -553,6 +562,11 @@ _ICON_PATHS = {
     "image": (
         '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/>'
         '<path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/>'
+    ),
+    "plus": '<path d="M12 5v14"/><path d="M5 12h14"/>',
+    "layers": (
+        '<polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/>'
+        '<polyline points="2 12 12 17 22 12"/>'
     ),
     "pencil": '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
     "folder": (
@@ -1099,7 +1113,13 @@ class MainWindow(QMainWindow):
         return page
 
     def _build_admin_page(self) -> QWidget:
-        page = AdminPage(self.store)
+        page = AdminPage(self.store, icons={
+            "organization": _render_svg("folder", COLORS["accent"], 16),
+            "project": _render_svg("layers", COLORS["text_soft"], 16),
+            "add": _render_svg("plus", COLORS["background"], 14),
+            "rename": _render_svg("pencil", COLORS["text_soft"], 14),
+            "delete": _render_svg("trash", COLORS["danger"], 14),
+        })
         page.changed.connect(self._library_changed)
         return page
 

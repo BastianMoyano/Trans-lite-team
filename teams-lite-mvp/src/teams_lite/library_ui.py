@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Callable
 
 from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal
-from PySide6.QtGui import QIcon, QPixmap
+from PySide6.QtGui import QColor, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSplitter,
     QStackedWidget,
+    QStyledItemDelegate,
     QVBoxLayout,
     QWidget,
 )
@@ -38,8 +39,30 @@ THUMBNAIL_ROLE = Qt.ItemDataRole.UserRole + 10
 THUMBNAIL_SIZE = QSize(160, 90)
 
 
+COUNT_ROLE = Qt.ItemDataRole.UserRole + 20
+
+
 def _count_label(count: int) -> str:
     return f"{count} reunión" if count == 1 else f"{count} reuniones"
+
+
+def _plural(count: int, singular: str, plural: str) -> str:
+    return f"{count} {singular if count == 1 else plural}"
+
+
+class _CountDelegate(QStyledItemDelegate):
+    """Draws the row as usual plus its meeting count, right-aligned and muted."""
+
+    def paint(self, painter, option, index):
+        super().paint(painter, option, index)
+        count = index.data(COUNT_ROLE)
+        if count is None:
+            return
+        painter.save()
+        painter.setPen(QColor("#8A97A6"))
+        painter.drawText(option.rect.adjusted(0, 0, -12, 0),
+                         Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, _count_label(int(count)))
+        painter.restore()
 
 
 class ThumbnailCache:
@@ -427,9 +450,10 @@ class AdminPage(QWidget):
 
     changed = Signal()
 
-    def __init__(self, store: Storage, parent: QWidget | None = None):
+    def __init__(self, store: Storage, icons: dict[str, QPixmap] | None = None, parent: QWidget | None = None):
         super().__init__(parent)
         self.store = store
+        self._icons = icons or {}
         layout = QVBoxLayout(self)
         layout.setContentsMargins(40, 28, 40, 28)
         layout.setSpacing(14)
@@ -443,13 +467,21 @@ class AdminPage(QWidget):
         hint.setObjectName("fieldHint")
         hint.setWordWrap(True)
         layout.addWidget(hint)
+        self.summary = QLabel()
+        self.summary.setObjectName("adminSummary")
+        layout.addWidget(self.summary)
         columns = QHBoxLayout()
         columns.setSpacing(16)
-        organization_card, self.organization_list, organization_buttons = self._column("Organizaciones", "Nueva")
+        (organization_card, _title, self.organization_list, self.organization_empty,
+         organization_buttons) = self._column("Organizaciones", "Nueva")
         self.new_organization_button, self.rename_organization_button, self.delete_organization_button = (
             organization_buttons
         )
-        project_card, self.project_list, project_buttons = self._column("Proyectos", "Nuevo")
+        self.organization_empty.setText(
+            "Todavía no hay organizaciones. Crea la primera con «Nueva» para agrupar tus reuniones por cliente o área."
+        )
+        (project_card, self.project_title, self.project_list, self.project_empty,
+         project_buttons) = self._column("Proyectos", "Nuevo")
         self.new_project_button, self.rename_project_button, self.delete_project_button = project_buttons
         columns.addWidget(organization_card, 1)
         columns.addWidget(project_card, 1)
@@ -476,8 +508,8 @@ class AdminPage(QWidget):
     def show_error(self, message: str) -> None:
         QMessageBox.warning(self, "Administrar", message)
 
-    @staticmethod
-    def _column(heading: str, new_label: str):
+    def _column(self, heading: str, new_label: str):
+        """A card with its title and actions on top, then the list or a hint when it is empty."""
         card = QFrame()
         card.setObjectName("card")
         layout = QVBoxLayout(card)
@@ -486,17 +518,28 @@ class AdminPage(QWidget):
         label = QLabel(heading)
         label.setObjectName("sectionTitle")
         layout.addWidget(label)
+        header = QHBoxLayout()  # actions right under the title, above the list
+        header.setSpacing(6)
+        buttons = (QPushButton(new_label), QPushButton("Renombrar"), QPushButton("Eliminar"))
+        for button, name, icon in zip(buttons, ("primaryButton", "ghostButton", "deleteButton"),
+                                      ("add", "rename", "delete")):
+            button.setObjectName(name)
+            if icon in self._icons:
+                button.setIcon(QIcon(self._icons[icon]))
+            header.addWidget(button)
+        header.addStretch(1)
+        layout.addLayout(header)
         items = QListWidget()
         items.setObjectName("adminList")
+        items.setItemDelegate(_CountDelegate(items))
+        items.setIconSize(QSize(16, 16))
         layout.addWidget(items, 1)
-        row = QHBoxLayout()
-        buttons = (QPushButton(new_label), QPushButton("Renombrar"), QPushButton("Eliminar"))
-        for button, name in zip(buttons, ("ghostButton", "ghostButton", "deleteButton")):
-            button.setObjectName(name)
-            row.addWidget(button)
-        row.addStretch(1)
-        layout.addLayout(row)
-        return card, items, buttons
+        empty = QLabel()
+        empty.setObjectName("emptyState")
+        empty.setWordWrap(True)
+        empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(empty, 1)
+        return card, label, items, empty, buttons
 
     @staticmethod
     def _selected(items: QListWidget) -> tuple[str, str] | None:
@@ -506,13 +549,15 @@ class AdminPage(QWidget):
             return None
         return str(chosen[0].data(Qt.ItemDataRole.UserRole)), chosen[0].text()
 
-    @staticmethod
-    def _fill(items: QListWidget, rows: list[dict], selected_id: str | None) -> None:
+    def _fill(self, items: QListWidget, rows: list[dict], selected_id: str | None, icon: str) -> None:
         items.blockSignals(True)
         items.clear()
         for row in rows:
             item = QListWidgetItem(row["name"])
+            if icon in self._icons:
+                item.setIcon(QIcon(self._icons[icon]))
             item.setData(Qt.ItemDataRole.UserRole, row["id"])
+            item.setData(COUNT_ROLE, row["meeting_count"])
             item.setToolTip(_count_label(row["meeting_count"]))
             items.addItem(item)
             if row["id"] == selected_id:
@@ -525,7 +570,19 @@ class AdminPage(QWidget):
         if organization_id is ANY:
             current = self._selected(self.organization_list)
             organization_id = current[0] if current else None
-        self._fill(self.organization_list, self.store.list_organizations(), organization_id)
+        organizations = self.store.list_organizations()
+        self._fill(self.organization_list, organizations, organization_id, "organization")
+        self.organization_list.setVisible(bool(organizations))
+        self.organization_empty.setVisible(not organizations)
+        projects = sum(len(self.store.list_projects(org["id"])) for org in organizations)
+        filed = sum(org["meeting_count"] for org in organizations)
+        vault = len(self.store.list_meetings(organization_id=None))
+        self.summary.setText(" · ".join((
+            _plural(len(organizations), "organización", "organizaciones"),
+            _plural(projects, "proyecto", "proyectos"),
+            _plural(filed, "reunión en organizaciones", "reuniones en organizaciones"),
+            f"{vault} en el Cofre de reuniones",
+        )))
         self._reload_projects(project_id)
 
     def _reload_projects(self, project_id: object = ANY) -> None:
@@ -534,7 +591,18 @@ class AdminPage(QWidget):
             project_id = current[0] if current else None
         organization = self._selected(self.organization_list)
         rows = self.store.list_projects(organization[0]) if organization else []
-        self._fill(self.project_list, rows, project_id)
+        self._fill(self.project_list, rows, project_id, "project")
+        if organization is None:
+            self.project_title.setText("Proyectos")
+            self.project_empty.setText("Elige una organización para ver y crear sus proyectos.")
+        else:
+            self.project_title.setText(f"Proyectos de {organization[1]}")
+            self.project_empty.setText(
+                f"{organization[1]} todavía no tiene proyectos. Crea uno con «Nuevo»; "
+                "sus reuniones sin proyecto quedan en «Sin proyecto»."
+            )
+        self.project_list.setVisible(bool(rows))
+        self.project_empty.setVisible(not rows)
         self._sync_buttons()
 
     def _sync_buttons(self) -> None:
