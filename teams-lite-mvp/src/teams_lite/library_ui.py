@@ -22,12 +22,13 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QSplitter,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from .minutes import CLI_LABELS
+from .chat_ui import ChatPanel
 from .previews import meeting_thumbnail
 from .storage import ANY, Storage
 
@@ -77,8 +78,6 @@ class PreviewPage(QWidget):
     move_meeting = Signal(str)
     export_meeting = Signal(str)
     import_requested = Signal()
-    chat_requested = Signal(str)  # CLI to chat with about the meetings in view
-
     def __init__(
         self,
         store: Storage,
@@ -86,6 +85,7 @@ class PreviewPage(QWidget):
         folder_icon: QPixmap,
         placeholder: QPixmap,
         describe: Callable[[dict], str],
+        default_cli: str = "claude",
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
@@ -99,9 +99,13 @@ class PreviewPage(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(40, 28, 40, 28)
         layout.setSpacing(14)
-        title = QLabel("Vista previa")
+        title = QLabel("Biblioteca")
         title.setObjectName("pageTitle")
         layout.addWidget(title)
+        subtitle = QLabel("Explora reuniones, revisa sus momentos y conversa con la IA desde un mismo lugar.")
+        subtitle.setObjectName("fieldHint")
+        subtitle.setWordWrap(True)
+        layout.addWidget(subtitle)
         header = QHBoxLayout()
         self.breadcrumb_bar = QHBoxLayout()
         self.breadcrumb_bar.setSpacing(4)
@@ -109,13 +113,8 @@ class PreviewPage(QWidget):
         header.addStretch(1)
         self.chat_button = QPushButton("Conversar con IA")
         self.chat_button.setObjectName("ghostButton")
-        self.chat_button.setToolTip(
-            "Abre una terminal con la CLI elegida para preguntar sobre las minutas de estas reuniones"
-        )
-        chat_menu = QMenu(self.chat_button)
-        for cli, label in CLI_LABELS.items():
-            chat_menu.addAction(label, lambda cli=cli: self.chat_requested.emit(cli))
-        self.chat_button.setMenu(chat_menu)
+        self.chat_button.setCheckable(True)
+        self.chat_button.setToolTip("Muestra u oculta el chat sobre las minutas de estas reuniones")
         header.addWidget(self.chat_button)
         self.move_button = QPushButton("Mover a…")
         self.move_button.setObjectName("ghostButton")
@@ -150,7 +149,18 @@ class PreviewPage(QWidget):
         self.stack = QStackedWidget()
         for widget in (self.grid, self.meeting_list, self.empty_label):
             self.stack.addWidget(widget)
-        layout.addWidget(self.stack, 1)
+        # The project chat sits to the right of its meetings, inside the same section.
+        self.chat_panel = ChatPanel(store.root, default_cli=default_cli)
+        self.chat_panel.setMinimumWidth(320)
+        self.chat_panel.hide()
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.splitter.addWidget(self.stack)
+        self.splitter.addWidget(self.chat_panel)
+        self.splitter.setChildrenCollapsible(False)
+        self.splitter.setStretchFactor(0, 3)
+        self.splitter.setStretchFactor(1, 2)
+        layout.addWidget(self.splitter, 1)
+        self.chat_button.toggled.connect(self.chat_panel.setVisible)
 
         self.grid.itemClicked.connect(self._enter)
         self.meeting_list.itemActivated.connect(
@@ -210,10 +220,15 @@ class PreviewPage(QWidget):
         meetings = self.visible_meetings()
         if meetings is not None:
             self._show_meetings(meetings)
-        elif not self._path:
-            self._show_organizations()
+            scope_key, title = self.chat_scope()
+            self.chat_panel.set_scope(scope_key, title, meetings)
         else:
-            self._show_projects(self._path[0][1])
+            self.chat_button.setChecked(False)  # the chat belongs to a project: hide it while choosing one
+            self.chat_panel.set_scope(None, "", [])
+            if not self._path:
+                self._show_organizations()
+            else:
+                self._show_projects(self._path[0][1])
 
     def _drop_missing_levels(self) -> None:
         """An organization or project deleted or renamed elsewhere must not leave a stale view."""
@@ -416,7 +431,7 @@ class AdminPage(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(40, 28, 40, 28)
         layout.setSpacing(14)
-        title = QLabel("Administrar")
+        title = QLabel("Organización")
         title.setObjectName("pageTitle")
         layout.addWidget(title)
         hint = QLabel(
@@ -608,6 +623,8 @@ class PlacementPicker(QWidget):
         self.project_combo = QComboBox()
         self.project_combo.setAccessibleName("Proyecto")
         for label, combo in (("Organización", self.organization_combo), ("Proyecto", self.project_combo)):
+            combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            combo.setMinimumContentsLength(10)
             column = QVBoxLayout()
             column.setSpacing(4)
             hint = QLabel(label)
