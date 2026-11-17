@@ -857,8 +857,9 @@ class MainWindow(QMainWindow):
         self.signals.transcription_finished.connect(self._on_transcription_finished)
         self.signals.update_available.connect(self.show_update)
         self.setWindowTitle("Teams Lite")
-        self.resize(1000, 780)
-        self.setMinimumSize(820, 600)
+        # The 190 px side menu sits next to the original 1000 x 780 page.
+        self.resize(1190, 780)
+        self.setMinimumSize(1010, 600)
         self.setPalette(_dark_palette())
         self.setStyleSheet(APP_STYLESHEET.replace("{mono_family}", mono_font_family()) + _checkbox_stylesheet())
         self._build_ui()
