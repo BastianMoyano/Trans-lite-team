@@ -286,6 +286,84 @@ class _FakeRecorder:
         self.store.finish_meeting(self.meeting_id)
 
 
+class MomentHotkeyTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.application = QApplication.instance() or QApplication([])
+
+    def _close(self, window):
+        if window.recorder is not None:  # never leave a recording open: closing would ask to confirm
+            window.stop_recording()
+            OcrAttendeeTests._wait_until_stopped(self, window)
+        window.close()
+
+    @staticmethod
+    def _kinds(window):
+        return [event['kind'] for event in window.store.list_events(window.meeting_id)]
+
+    def test_unavailable_hotkey_is_retried_while_recording_and_logged(self):
+        attempts = iter([False, False, True])
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch('teams_lite.app.Recorder', _FakeRecorder), \
+             mock.patch('teams_lite.app.register_moment_hotkey', side_effect=lambda _handle: next(attempts)), \
+             mock.patch('teams_lite.app.unregister_moment_hotkey') as unregister:
+            window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False, ocr_enabled=False))
+            window.timer.stop()
+            try:
+                window.start_recording()
+                self.assertFalse(window._hotkey_registered)
+                self.assertTrue(window._hotkey_retry_timer.isActive())
+                self.assertIn('reintentando', window.moment_hint.text())
+                self.assertEqual(self._kinds(window).count('moment_hotkey_unavailable'), 1)
+
+                window._hotkey_retry_timer.timeout.emit()  # still taken: logged only once
+                self.assertFalse(window._hotkey_registered)
+                self.assertEqual(self._kinds(window).count('moment_hotkey_unavailable'), 1)
+                window._hotkey_retry_timer.timeout.emit()  # released by the other app
+                self.assertTrue(window._hotkey_registered)
+                self.assertFalse(window._hotkey_retry_timer.isActive())
+                self.assertIn('Atajo global activo', window.moment_hint.text())
+                self.assertIn('moment_hotkey_ready', self._kinds(window))
+
+                window.stop_recording()
+                OcrAttendeeTests._wait_until_stopped(self, window)
+                unregister.assert_called_once()
+            finally:
+                self._close(window)
+
+    @unittest.skipUnless(sys.platform == 'win32', 'WM_HOTKEY is a Windows message')
+    def test_hotkey_press_is_logged_and_marks_a_moment(self):
+        import ctypes
+        from ctypes import wintypes
+        from PySide6.QtCore import QByteArray
+        from teams_lite.hotkey import MOMENT_HOTKEY_ID, WM_HOTKEY
+        fake_moment = {'offset_seconds': 1.0, 'image': None, 'source': None, 'problem': None, 'note': ''}
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch('teams_lite.app.Recorder', _FakeRecorder), \
+             mock.patch('teams_lite.app.register_moment_hotkey', return_value=True), \
+             mock.patch('teams_lite.app.unregister_moment_hotkey'), \
+             mock.patch('teams_lite.app._confirmation_beep'), \
+             mock.patch('teams_lite.app.capture_moment', return_value=fake_moment) as capture:
+            window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False, ocr_enabled=False))
+            window.timer.stop()
+            try:
+                window.start_recording()
+                self.assertIn('moment_hotkey_ready', self._kinds(window))
+                message = wintypes.MSG()
+                message.message, message.wParam = WM_HOTKEY, MOMENT_HOTKEY_ID
+                handled = window.nativeEvent(QByteArray(b'windows_generic_MSG'), ctypes.addressof(message))
+                self.assertEqual(handled, (True, 0))
+                self.assertIn('moment_hotkey_pressed', self._kinds(window))
+                deadline = time.monotonic() + 2
+                while not capture.called and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                capture.assert_called_once()
+                window.stop_recording()
+                OcrAttendeeTests._wait_until_stopped(self, window)
+            finally:
+                self._close(window)
+
+
 class OcrAttendeeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

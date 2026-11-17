@@ -580,6 +580,7 @@ _ICON_PATHS = {
 }
 _FILLED_ICONS = {"stop"}
 OCR_INTERVAL_SECONDS = 60
+HOTKEY_RETRY_SECONDS = 5
 _MONTHS = ("ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic")
 _STATUS_LABELS = {"recording": "Grabando", "completed": "Completada", "interrupted": "Interrumpida"}
 _TRANSCRIPT_LINE = re.compile(
@@ -930,6 +931,10 @@ class MainWindow(QMainWindow):
         self._audio_warnings_shown = 0
         self._hotkey_registered = False
         self._ocr_window_warned = False
+        self._hotkey_unavailable_logged = False
+        self._hotkey_retry_timer = QTimer(self)
+        self._hotkey_retry_timer.setInterval(HOTKEY_RETRY_SECONDS * 1000)
+        self._hotkey_retry_timer.timeout.connect(self._acquire_moment_hotkey)
         self._transcription_progress: dict[str, float] = {}
         self._update: UpdateInfo | None = None
         self.signals = AppSignals()
@@ -1698,10 +1703,33 @@ class MainWindow(QMainWindow):
             self.moment_hint.setText(f"Atajo global activo: {MOMENT_HOTKEY_LABEL} (funciona aunque estés en Teams).")
         else:
             self.moment_hint.setText(
-                f"El atajo {MOMENT_HOTKEY_LABEL} no está disponible (otra aplicación lo usa); usa el botón."
+                f"El atajo {MOMENT_HOTKEY_LABEL} está ocupado por otra aplicación; reintentando cada "
+                f"{HOTKEY_RETRY_SECONDS} s. Mientras tanto usa el botón o la mascota."
             )
 
+    def _acquire_moment_hotkey(self) -> None:
+        """Register Ctrl+Alt+M for this recording; when another app holds it, keep retrying.
+
+        Each outcome goes to the meeting's events, so a press that never arrives can be explained.
+        """
+        if self.recorder is None or self.meeting_id is None:
+            self._hotkey_retry_timer.stop()
+            return
+        self._hotkey_registered = register_moment_hotkey(int(self.winId()))
+        if self._hotkey_registered:
+            self._hotkey_retry_timer.stop()
+            self.store.add_event(self.meeting_id, "moment_hotkey_ready", MOMENT_HOTKEY_LABEL)
+            self._set_moment_controls(recording=True)
+            return
+        if not self._hotkey_unavailable_logged:
+            self._hotkey_unavailable_logged = True
+            self.store.add_event(
+                self.meeting_id, "moment_hotkey_unavailable", f"{MOMENT_HOTKEY_LABEL} lo usa otra aplicación"
+            )
+        self._hotkey_retry_timer.start()
+
     def _release_moment_hotkey(self) -> None:
+        self._hotkey_retry_timer.stop()
         if self._hotkey_registered:
             unregister_moment_hotkey(int(self.winId()))
             self._hotkey_registered = False
@@ -1749,6 +1777,8 @@ class MainWindow(QMainWindow):
 
     def nativeEvent(self, event_type, message):  # noqa: N802 - Qt API
         if hotkey_id_from_native_event(event_type, message) == MOMENT_HOTKEY_ID:
+            if self.meeting_id is not None:
+                self.store.add_event(self.meeting_id, "moment_hotkey_pressed", MOMENT_HOTKEY_LABEL)
             return self.mark_moment(from_hotkey=True), 0
         return super().nativeEvent(event_type, message)
 
@@ -1793,7 +1823,8 @@ class MainWindow(QMainWindow):
         self._audio_warnings_shown = 0
         self._moment_count = 0
         self._ocr_window_warned = False
-        self._hotkey_registered = register_moment_hotkey(int(self.winId()))
+        self._hotkey_unavailable_logged = False
+        self._acquire_moment_hotkey()
         self._set_moment_controls(recording=True)
         visual_problem = None
         if self.visual_speaker_checkbox.isChecked():

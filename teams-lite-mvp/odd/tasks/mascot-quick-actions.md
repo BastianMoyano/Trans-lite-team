@@ -1,0 +1,19 @@
+# Mascot with quick actions, and the moment hotkey
+Objective: a floating mascot that records at once with configurable defaults, plus a moment hotkey that recovers and explains itself.
+Branch: feat/mascot-quick-actions · Delivery: ask-on-risk · Test runner: `.venv\Scripts\python -m unittest discover -s tests` (from teams-lite-mvp)
+
+## Specs
+- S1: "el capturar scrennshot no esta funcionando crtl+alt+m" — answer: "Sí, estaba grabando". Not reproduced (see L2). Scope: while recording, if Ctrl+Alt+M cannot be registered the app retries until it can, and each recording logs whether the hotkey was ready, unavailable or pressed, so the next failure explains itself. Assumption: the hotkey stays registered only while recording (holding it all the time would steal Ctrl+Alt+M from other apps such as Word).
+- S2: "podemos hacer como una mascota de gpt que tenga los accesos rapido" — a floating mascot, always on top (over Teams), draggable, that remembers its position. Answer on its actions: "Grabar/Detener, Captura y OCR (Recommended)": Grabar/Detener, Captura (marks a moment with a screenshot, like Ctrl+Alt+M) and OCR (reads the attendees). Captura and OCR work while recording. Double click opens Teams Lite.
+- S3: "que inciar reunion de una sin que pregunta el nombre,el proyecto o organizacion" — Grabar in the mascot starts recording immediately with the defaults; no dialog. Assumption: if the default organization or project no longer exists, the meeting goes to the Cofre and the status says so.
+- S4: "eso lo puede configurar en la seccion de mascota el por defecto" — a "Mascota" section in the side menu sets the default title, organization and project, and whether the mascot is shown. Assumption: settings live in `data/mascot.json`; they apply right away.
+
+## Tasks
+- T1 [S1] inline — hotkey retry while recording + events moment_hotkey_ready / moment_hotkey_unavailable / moment_hotkey_pressed — done, RED (no retry timer, no events) → GREEN 2; tests stop recording before closing so a RED fails instead of hanging on the close confirmation
+- T2 [S3,S4] inline — mascot settings (load/save, validation) and quick start with defaults — pending
+- T3 [S2,S4] inline — mascot widget, Mascota section, wiring to recording, capture and OCR — pending
+- T4 [S1-S4] inline — README — pending
+
+## Log
+- L1 (2026-11-17): "el capturar scrennshot no esta funcionando crtl+alt+m, lo otro podemos hacer como una mascota de gpt  que tenga los accesos rapido, que inciar reunion de una sin que pregunta el nombre,el proyecto o organizacion, eso lo puede configurar en la seccion de mascota el por defecto, solamente que tenga lo accesos rapido de grabar o detener y capturar ocr" + answers "Sí, estaba grabando" and "Grabar/Detener, Captura y OCR (Recommended)".
+- L2: Reproduction attempts, all marked the moment with a Teams screenshot: (1) source app, real desktop, fake recorder, SendInput Ctrl+Alt+M with Teams Lite focused; (2) same with Teams in the foreground; (3) frozen TeamsLite.exe 0.5.0 driven by UI Automation (Iniciar grabación) with a temp config. Ctrl+Alt+M is free on this PC. The user's last real meeting (2026-11-17 16:02, recorded with 0.3.0) has 0 moments and no events, so the press never reached the app; physical AltGr keyboards and another app holding the combination at that time could not be simulated.
