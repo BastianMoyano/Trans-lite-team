@@ -44,5 +44,5 @@ body:
     attributes:
       label: Duplicate check
       options:
-        - label: I searched existing open and closed issues before submitting this request.
+        - label: Existing open and closed issues were searched before this request was submitted.
           required: true
