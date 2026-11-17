@@ -11,7 +11,7 @@ Branch: feat/workspace-usability · Delivery: ask-on-risk · Test runner: `.venv
 
 ## Tasks
 - T1 [S5] inline — Storage.rename_meeting + "Renombrar" in Grabar meeting actions and Biblioteca context menu — Risk: item 1 (updates an existing stored title; user-requested, single column) — done, RED 3 → GREEN 3
-- T2 [S1] inline — recent recordings filtered by the recording card placement — pending
+- T2 [S1] inline — recent recordings filtered by the recording card placement — done, RED 3 → GREEN 3; opening or moving the selected meeting switches the list to its project
 - T3 [S3] inline — two-column Grabar layout — pending
 - T4 [S2] inline — "Capturas" gallery tab — pending
 - T5 [S4] inline — Organización visual pass — pending

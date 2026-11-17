@@ -1428,6 +1428,84 @@ class LibraryUiTests(unittest.TestCase):
                 window.close()
 
 
+class RecentRecordingsScopeTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.application = QApplication.instance() or QApplication([])
+
+    @staticmethod
+    def _listed(window):
+        return [window.table.item(row, 1).text() for row in range(window.table.rowCount())]
+
+    def _library(self, d):
+        storage = Storage(d)
+        zenith = storage.create_organization('Zenith')
+        crm = storage.create_project(zenith, 'CRM')
+        ids = {
+            'Suelta': storage.create_meeting('Suelta'),
+            'Kickoff': storage.create_meeting('Kickoff', organization_id=zenith, project_id=crm),
+            'General': storage.create_meeting('General', organization_id=zenith),
+        }
+        for meeting in ids.values():
+            storage.finish_meeting(meeting)
+        return storage, zenith, crm, ids
+
+    def test_recent_recordings_follow_the_project_chosen_for_recording(self):
+        with tempfile.TemporaryDirectory() as d:
+            storage, zenith, crm, _ = self._library(d)
+            window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False))
+            window.timer.stop()
+            try:
+                picker = window.placement_picker
+                self.assertEqual(self._listed(window), ['Suelta'])
+                self.assertEqual(window.history_scope.text(), 'Cofre de reuniones')
+                self.assertEqual(window.history_count.text(), '1')
+
+                picker.organization_combo.setCurrentIndex(picker.organization_combo.findData(zenith))
+                self.assertEqual(self._listed(window), ['General'])
+                self.assertEqual(window.history_scope.text(), 'Zenith › Sin proyecto')
+
+                picker.project_combo.setCurrentIndex(picker.project_combo.findData(crm))
+                self.assertEqual(self._listed(window), ['Kickoff'])
+                self.assertEqual(window.history_scope.text(), 'Zenith › CRM')
+            finally:
+                window.close()
+
+    def test_empty_project_says_so(self):
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            storage.create_meeting('Suelta')
+            empty = storage.create_organization('Vacía')
+            window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False))
+            window.timer.stop()
+            try:
+                picker = window.placement_picker
+                picker.organization_combo.setCurrentIndex(picker.organization_combo.findData(empty))
+                self.assertTrue(window.table.isHidden())
+                self.assertFalse(window.history_empty.isHidden())
+                self.assertIn('este proyecto', window.history_empty.text())
+            finally:
+                window.close()
+
+    def test_opening_or_moving_a_meeting_shows_it_in_its_project(self):
+        with tempfile.TemporaryDirectory() as d:
+            storage, zenith, crm, ids = self._library(d)
+            window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False))
+            window.timer.stop()
+            try:
+                window.open_meeting(ids['Kickoff'])
+                self.assertEqual(window.history_scope.text(), 'Zenith › CRM')
+                self.assertEqual(window._selected_meeting_id(), ids['Kickoff'])
+
+                window._choose_placement = lambda _meeting: (None, None)
+                window.move_meeting()
+                self.assertEqual(window.history_scope.text(), 'Cofre de reuniones')
+                self.assertEqual(sorted(self._listed(window)), ['Kickoff', 'Suelta'])
+                self.assertEqual(window._selected_meeting_id(), ids['Kickoff'])
+            finally:
+                window.close()
+
+
 class RenameMeetingUiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

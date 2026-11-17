@@ -184,6 +184,11 @@ QLabel#sectionTitle {
     font-size: 16px;
     font-weight: 600;
 }
+QLabel#historyScope {
+    color: #46C7B5;
+    font-size: 12px;
+    font-weight: 600;
+}
 QLabel#sectionMeta, QLabel#fieldHint, QLabel#statusText {
     color: #929EAC;
     font-size: 12px;
@@ -1026,6 +1031,8 @@ class MainWindow(QMainWindow):
         self.table.itemSelectionChanged.connect(self.show_selected_transcript)
         self.delete_button.clicked.connect(self.delete_selected_meeting)
         self.rename_button.clicked.connect(lambda: self.rename_meeting())
+        self.placement_picker.organization_combo.currentIndexChanged.connect(lambda _index: self._refresh())
+        self.placement_picker.project_combo.currentIndexChanged.connect(lambda _index: self._refresh())
         self.move_button.clicked.connect(lambda: self.move_meeting())
         self.export_button.clicked.connect(lambda: self.export_meeting())
         self.copy_button.clicked.connect(self.copy_transcript)
@@ -1125,8 +1132,13 @@ class MainWindow(QMainWindow):
         except ValueError as exc:
             self._show_error(f"No se pudo mover la reunión: {exc}")
             return
+        was_selected = meeting_id == self._selected_meeting_id()
         self.preview_page.refresh()
+        if was_selected:
+            self._show_placement_of(meeting_id)
         self._refresh()
+        if was_selected:
+            self._select_meeting_row(meeting_id)
         self._set_status("Reunión movida.", tone="success")
 
     def _choose_export(self, meeting: dict) -> tuple[Path, bool] | None:
@@ -1213,16 +1225,32 @@ class MainWindow(QMainWindow):
         self._refresh()
         self._set_status(message, tone="success")
 
-    def open_meeting(self, meeting_id: str) -> None:
-        """Shows a meeting picked in another section on the Teams Lite page."""
-        self.side_nav.setCurrentRow(0)
-        self._refresh()
+    def _placement_label(self) -> str:
+        picker = self.placement_picker
+        if picker.organization_id() is None:
+            return picker.organization_combo.currentText()
+        return f"{picker.organization_combo.currentText()} › {picker.project_combo.currentText()}"
+
+    def _show_placement_of(self, meeting_id: str) -> None:
+        """Recent recordings follow the meeting: switch to the project it is filed in."""
+        meeting = self.store.get_meeting(meeting_id)
+        if meeting is not None:
+            self.placement_picker.set_placement(meeting["organization_id"], meeting["project_id"])
+
+    def _select_meeting_row(self, meeting_id: str) -> None:
         for row in range(self.table.rowCount()):
             item = self.table.item(row, 0)
             if item is not None and item.data(Qt.ItemDataRole.UserRole) == meeting_id:
                 self.table.selectRow(row)
                 self.table.scrollToItem(item)
                 return
+
+    def open_meeting(self, meeting_id: str) -> None:
+        """Shows a meeting picked in another section on the Teams Lite page."""
+        self.side_nav.setCurrentRow(0)
+        self._show_placement_of(meeting_id)
+        self._refresh()
+        self._select_meeting_row(meeting_id)
 
     def _show_section(self, row: int) -> None:
         if row < 0:
@@ -1413,9 +1441,16 @@ class MainWindow(QMainWindow):
         title.setObjectName("sectionTitle")
         self.history_count = QLabel("0")
         self.history_count.setObjectName("sectionMeta")
-        heading.addWidget(title)
+        self.history_scope = QLabel()
+        self.history_scope.setObjectName("historyScope")
+        self.history_scope.setToolTip("Se muestran las reuniones de la organización y el proyecto elegidos para grabar")
+        titles = QVBoxLayout()
+        titles.setSpacing(2)
+        titles.addWidget(title)
+        titles.addWidget(self.history_scope)
+        heading.addLayout(titles)
         heading.addStretch(1)
-        heading.addWidget(self.history_count)
+        heading.addWidget(self.history_count, 0, Qt.AlignmentFlag.AlignTop)
         layout.addLayout(heading)
 
         # Columns 1-3 keep title/status/id as item data; column 0 renders the card row.
@@ -1440,7 +1475,7 @@ class MainWindow(QMainWindow):
         self.table.setMinimumHeight(260)
         layout.addWidget(self.table, 1)
 
-        self.history_empty = QLabel("Todavía no hay grabaciones.")
+        self.history_empty = QLabel("Todavía no hay grabaciones en este proyecto.")
         self.history_empty.setObjectName("emptyState")
         self.history_empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.history_empty, 1)
@@ -1913,12 +1948,16 @@ class MainWindow(QMainWindow):
 
     def _refresh(self) -> None:
         self._show_new_audio_warnings()
-        meetings = self.store.list_meetings()
-        signature = tuple(
+        all_meetings = self.store.list_meetings()
+        # Recent recordings belong to the organization/project chosen for recording.
+        placement = (self.placement_picker.organization_id(), self.placement_picker.project_id())
+        meetings = [m for m in all_meetings if (m["organization_id"], m["project_id"]) == placement]
+        signature = (placement, tuple(
             (meeting["id"], meeting["title"], meeting["status"], meeting["started_utc"],
              meeting["organization_id"], meeting["project_id"])
-            for meeting in meetings
-        )
+            for meeting in all_meetings
+        ))
+        self.history_scope.setText(self._placement_label())
         if signature == self._meetings_signature:
             return
         self._meetings_signature = signature
