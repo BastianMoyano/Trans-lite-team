@@ -150,7 +150,7 @@ While recording, "Marcar momento" (with an optional note) or the global hotkey *
 - **One meeting**: the button next to "Generar minuta" (enabled once the meeting has minutes) uses the CLI chosen in the selector.
 - **A project**: in Vista previa, open a project (or the Cofre de reuniones / Sin proyecto) and choose Claude or Codex from the "Conversar con IA" menu. Only meetings that already have minutes are included.
 
-Each time, the app rebuilds `data/.chat/<scope>/` with copies of each meeting's `minutes.md` and `transcript.txt`, an `INDEX.md` (title, date, folder) and the same instructions as `CLAUDE.md` and `AGENTS.md`. The terminal opens there: Windows Terminal (`wt -d <folder>`) when installed, otherwise a new console. Claude runs as `claude --tools Read,Grep,Glob` (read-only, no shell or web) and Codex as `codex --sandbox read-only`; the real meeting folders are never exposed. As with minutes, meeting content is sent to Anthropic or OpenAI, and no meeting text is passed on the command line.
+Each time, the app rebuilds `data/.chat/<scope>/` with copies of each meeting's `minutes.md` and `transcript.txt`, an `INDEX.md` (title, date, folder) and the same instructions as `CLAUDE.md` and `AGENTS.md`. The terminal opens there: Windows Terminal (`wt -d <folder>`) when installed, otherwise a new console. Claude runs as `claude --tools Read,Grep,Glob` (read-only, no shell or web) and Codex as `codex --sandbox read-only`, so the agent cannot change any file. It starts in the copies, but read tools can still open other paths by absolute name, subject to each CLI's own permission prompts; it is not a filesystem sandbox. As with minutes, meeting content is sent to Anthropic or OpenAI, and no meeting text is passed on the command line.
 
 ## Run
 
