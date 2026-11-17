@@ -1,0 +1,48 @@
+name: Feature request
+description: Propose a user-facing capability or product improvement.
+title: "feat: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or opportunity
+      description: Describe the user need or opportunity this change addresses.
+    validations:
+      required: true
+
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Proposed outcome
+      description: Describe the intended user-visible result without prescribing unnecessary implementation details.
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: List the observable conditions that demonstrate completion.
+      placeholder: |
+        - [ ] The user can...
+        - [ ] The interface shows...
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add screenshots, constraints, or related information when useful.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: duplicates
+    attributes:
+      label: Duplicate check
+      options:
+        - label: I searched existing open and closed issues before submitting this request.
+          required: true
