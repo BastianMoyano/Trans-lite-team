@@ -143,6 +143,15 @@ While recording, "Marcar momento" (with an optional note) or the global hotkey *
 - Codex runs as `codex exec --sandbox read-only --skip-git-repo-check --ephemeral -o <file> -`. Read-only still allows reading files, so Claude is the default.
 - Both run in an empty temporary folder. A run that exceeds 10 minutes is cancelled and its whole process tree is killed; previous minutes are kept on any failure.
 
+### Chat about the minutes
+
+"Conversar con IA" opens an interactive Claude Code or Codex session in a new terminal window to ask about what was said or decided:
+
+- **One meeting**: the button next to "Generar minuta" (enabled once the meeting has minutes) uses the CLI chosen in the selector.
+- **A project**: in Vista previa, open a project (or the Cofre de reuniones / Sin proyecto) and choose Claude or Codex from the "Conversar con IA" menu. Only meetings that already have minutes are included.
+
+Each time, the app rebuilds `data/.chat/<scope>/` with copies of each meeting's `minutes.md` and `transcript.txt`, an `INDEX.md` (title, date, folder) and the same instructions as `CLAUDE.md` and `AGENTS.md`. The terminal opens there: Windows Terminal (`wt -d <folder>`) when installed, otherwise a new console. Claude runs as `claude --tools Read,Grep,Glob` (read-only, no shell or web) and Codex as `codex --sandbox read-only`, so the agent cannot change any file. It starts in the copies, but read tools can still open other paths by absolute name, subject to each CLI's own permission prompts; it is not a filesystem sandbox. As with minutes, meeting content is sent to Anthropic or OpenAI, and no meeting text is passed on the command line.
+
 ## Run
 
 ```powershell
@@ -196,6 +205,22 @@ To publish an update, raise `version` in `pyproject.toml` and `__version__` in `
 4. Optionally enable active-speaker identification before recording; keep the Teams meeting window visible.
 5. Stop recording. WAV finalization completes before CPU transcription starts.
 
+### Organizations, projects and preview
+
+The left menu has three sections:
+
+- **Teams Lite** records and shows transcripts. Before recording, choose an **Organización** and a **Proyecto**. With no organization chosen, the meeting goes to the **Cofre de reuniones**, the default place for unfiled meetings. The folder icon **Mover a…** (next to *Eliminar reunión*) files the selected meeting in another organization or project, or back in the Cofre.
+- **Vista previa** browses organizations, then their projects (plus *Sin proyecto*), then their meetings newest first. Each meeting shows a thumbnail: the first marked moment's screenshot, otherwise the first active-speaker frame, otherwise a placeholder. Organization and project cards use the newest meeting with a screenshot. Double-click a meeting to open it in Teams Lite; right-click or **Mover a…** to move it.
+- **Administrar** creates, renames and deletes organizations and projects. Names are unique, ignoring case (projects within their organization). Deleting an organization sends its meetings to the Cofre; deleting a project keeps its meetings in the organization without a project. Meetings are never deleted from here.
+
+Filing is metadata only: a moved meeting keeps its folder under `data/`. Databases from earlier versions gain the new columns on first launch, and their meetings appear in the Cofre.
+
+### Sharing meetings (export and import)
+
+The share icon next to *Eliminar reunión* (or right-click › **Exportar…** in Vista previa) saves the meeting as a `.zip` package. It holds the transcript, minutes, marked moments with their screenshots, attendees and the first active-speaker frame. **Incluir audio** is off by default; turn it on when the receiver should be able to transcribe again (a one-hour meeting adds several hundred MB).
+
+**Importar…** in Vista previa adds a package as a new meeting. The destination starts on the organization or project being browsed. At the top level it starts on the organization and project with the same names as the sender's, ignoring case, or on the Cofre when there is no match. The meeting keeps its original title, date and status, and importing the same package twice creates two meetings. Packages are checked before anything is written: a damaged package, one from a newer Teams Lite, or one with paths that leave the meeting folder is rejected and changes nothing.
+
 Meeting data is stored under `data/<meeting-id>/`; metadata is in `data/meetings.sqlite3`. New meetings use a readable, unique folder name: local start date, hour and minute, then the title (for example `data/2026-11-13 07-44 Daily ventas/`). Characters Windows does not allow in names become `_`, the title is cut to 40 characters, and a second meeting with the same minute and title gets ` (2)`. Meetings recorded before this change keep their original folder.
 
 ## Recovery model
@@ -221,7 +246,10 @@ The tests cover SQLite persistence/recovery, segmented audio with fake devices, 
 src/teams_lite/
   app.py            PySide6 UI and background orchestration
   audio.py          microphone/loopback capture and segment rotation
-  storage.py        SQLite schema and interrupted-segment recovery
+  storage.py        SQLite schema, organizations/projects and interrupted-segment recovery
+  library_ui.py     organization/project picker, Vista previa and Administrar pages
+  previews.py       picks the screenshot that represents a meeting
+  sharing.py        meeting export/import packages (.zip)
   transcription.py  CPU ONNX transcription and timestamped exports
   speakers.py       conservative source labels/manual mapping
   ocr.py            optional screenshot OCR hints

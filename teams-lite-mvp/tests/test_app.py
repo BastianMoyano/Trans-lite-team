@@ -13,6 +13,8 @@ from PySide6.QtWidgets import QApplication
 
 from teams_lite.app import _MEETING_ROLE, MainWindow
 from teams_lite.config import AppConfig
+from teams_lite.library_ui import THUMBNAIL_ROLE, ExportOptionsDialog, MoveMeetingDialog
+from teams_lite.sharing import export_meeting, read_package
 from teams_lite.moments import load_moments
 from teams_lite.ocr import load_participants, merge_participants
 from teams_lite.storage import Storage
@@ -484,6 +486,93 @@ class MinutesUiTests(unittest.TestCase):
                 window.close()
 
 
+class ChatUiTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.application = QApplication.instance() or QApplication([])
+
+    _meeting_with_transcript = MinutesUiTests._meeting_with_transcript
+    _open = MinutesUiTests._open
+    _click_card = staticmethod(lambda page, label: LibraryUiTests._click_card(page, label))
+
+    def test_meeting_chat_opens_the_selected_cli_over_that_meeting(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch('teams_lite.app.launch_chat') as launch:
+            meeting_id, _ = self._meeting_with_transcript(d, minutes='# Minuta\nMigrar antes del 30\n')
+            window = self._open(d, minutes_cli='codex')
+            try:
+                self.assertTrue(window.chat_button.isEnabled())
+                window.chat_button.click()
+
+                workspace, cli = launch.call_args.args
+                self.assertEqual('codex', cli)
+                self.assertEqual(Path(workspace), Path(d).resolve() / '.chat' / f'meeting-{meeting_id}')
+                copied = Path(workspace) / 'meetings' / meeting_id / 'minutes.md'
+                self.assertIn('Migrar antes del 30', copied.read_text(encoding='utf-8'))
+                self.assertIn('Codex', window.status_label.text())
+            finally:
+                window.close()
+
+    def test_meeting_chat_is_disabled_without_minutes(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._meeting_with_transcript(d)
+            window = self._open(d)
+            try:
+                self.assertFalse(window.chat_button.isEnabled())
+            finally:
+                window.close()
+
+    def test_project_chat_is_offered_inside_a_project_and_reads_its_minutes(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch('teams_lite.app.launch_chat') as launch:
+            storage = Storage(d)
+            zenith = storage.create_organization('Zenith')
+            crm = storage.create_project(zenith, 'CRM')
+            with_minutes = storage.create_meeting('Kickoff', organization_id=zenith, project_id=crm)
+            storage.create_meeting('Daily', organization_id=zenith, project_id=crm)
+            other = storage.create_meeting('Suelta')
+            for meeting_id in (with_minutes, other):
+                (Path(d) / meeting_id / 'minutes.md').write_text('# Minuta\n', encoding='utf-8')
+            window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False))
+            window.timer.stop()
+            try:
+                page = window.preview_page
+                window.side_nav.setCurrentRow(1)
+                self.assertTrue(page.chat_button.isHidden())
+                self._click_card(page, 'Zenith')
+                self.assertTrue(page.chat_button.isHidden())
+                self._click_card(page, 'CRM')
+                self.assertFalse(page.chat_button.isHidden())
+                self.assertEqual([a.text() for a in page.chat_button.menu().actions()], ['Claude', 'Codex'])
+
+                page.chat_button.menu().actions()[0].trigger()
+
+                workspace, cli = launch.call_args.args
+                self.assertEqual('claude', cli)
+                self.assertEqual(Path(workspace).parent, Path(d).resolve() / '.chat')
+                self.assertEqual([p.name for p in (Path(workspace) / 'meetings').iterdir()], [with_minutes])
+                self.assertIn('Zenith › CRM', (Path(workspace) / 'CLAUDE.md').read_text(encoding='utf-8'))
+            finally:
+                window.close()
+
+    def test_project_chat_without_minutes_explains_why_and_launches_nothing(self):
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch('teams_lite.app.launch_chat') as launch, \
+             mock.patch('teams_lite.app.QMessageBox.warning') as modal:
+            storage = Storage(d)
+            storage.create_meeting('Suelta')
+            window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False))
+            window.timer.stop()
+            try:
+                page = window.preview_page
+                self._click_card(page, 'Cofre de reuniones')
+                page.chat_button.menu().actions()[1].trigger()
+
+                launch.assert_not_called()
+                self.assertIn('No hay minutas', window.status_label.text())
+                modal.assert_called_once()
+            finally:
+                window.close()
+
+
 class UiPerformanceTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -935,6 +1024,430 @@ class VisualFailureDuringRecordingTests(unittest.TestCase):
                 self.assertIn("audio sigue grabando", window.status_label.text())
             finally:
                 window.close()
+
+
+class LibraryUiTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.application = QApplication.instance() or QApplication([])
+
+    _wait_until_stopped = OcrAttendeeTests._wait_until_stopped
+
+    def test_side_menu_switches_between_sections(self):
+        with tempfile.TemporaryDirectory() as d:
+            window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False))
+            window.timer.stop()
+            try:
+                labels = [window.side_nav.item(row).text() for row in range(window.side_nav.count())]
+                self.assertEqual(labels, ['Teams Lite', 'Vista previa', 'Administrar'])
+                self.assertIs(window.pages.currentWidget(), window.recording_page)
+                self.assertTrue(window.recording_page.isAncestorOf(window.start_button))
+
+                window.side_nav.setCurrentRow(1)
+                self.assertIs(window.pages.currentWidget(), window.preview_page)
+                window.side_nav.setCurrentRow(2)
+                self.assertIs(window.pages.currentWidget(), window.admin_page)
+                window.side_nav.setCurrentRow(0)
+                self.assertIs(window.pages.currentWidget(), window.recording_page)
+            finally:
+                window.close()
+
+    def test_recording_without_a_choice_goes_to_the_meeting_vault(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch("teams_lite.app.Recorder", _FakeRecorder):
+            storage = Storage(d)
+            storage.create_project(storage.create_organization('Zenith'), 'CRM')
+            window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False, ocr_enabled=False))
+            window.timer.stop()
+            try:
+                picker = window.placement_picker
+                self.assertEqual(picker.organization_combo.currentText(), 'Cofre de reuniones')
+                self.assertEqual(picker.organization_combo.itemText(1), 'Zenith')
+                self.assertFalse(picker.project_combo.isEnabled())
+
+                window.start_recording()
+                [meeting] = storage.list_meetings()
+                self.assertEqual((meeting['organization_id'], meeting['project_id']), (None, None))
+                window.stop_recording()
+                self._wait_until_stopped(window)
+            finally:
+                window.close()
+
+    def test_recording_is_filed_in_the_chosen_organization_and_project(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch("teams_lite.app.Recorder", _FakeRecorder):
+            storage = Storage(d)
+            zenith = storage.create_organization('Zenith')
+            crm = storage.create_project(zenith, 'CRM')
+            window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False, ocr_enabled=False))
+            window.timer.stop()
+            try:
+                picker = window.placement_picker
+                picker.organization_combo.setCurrentIndex(picker.organization_combo.findData(zenith))
+                self.assertTrue(picker.project_combo.isEnabled())
+                self.assertEqual([picker.project_combo.itemText(i) for i in range(picker.project_combo.count())],
+                                 ['Sin proyecto', 'CRM'])
+                picker.project_combo.setCurrentIndex(picker.project_combo.findData(crm))
+
+                window.start_recording()
+                [meeting] = storage.list_meetings()
+                self.assertEqual((meeting['organization_id'], meeting['project_id']), (zenith, crm))
+                window.stop_recording()
+                self._wait_until_stopped(window)
+            finally:
+                window.close()
+
+    @staticmethod
+    def _add_moment_screenshot(meeting_dir):
+        from PIL import Image
+        (meeting_dir / 'moments').mkdir(parents=True, exist_ok=True)
+        Image.new('RGB', (320, 180), (40, 90, 160)).save(meeting_dir / 'moments' / 'teams-1.jpg')
+        (meeting_dir / 'moments.jsonl').write_text(
+            '{"offset_seconds": 3.0, "image": "moments/teams-1.jpg"}\n', encoding='utf-8')
+
+    @staticmethod
+    def _grid_texts(page):
+        return [page.grid.item(row).text().split('\n')[0] for row in range(page.grid.count())]
+
+    @staticmethod
+    def _click_card(page, label):
+        item = next(page.grid.item(row) for row in range(page.grid.count())
+                    if page.grid.item(row).text().split('\n')[0] == label)
+        page.grid.itemClicked.emit(item)
+
+    def test_preview_drills_from_organizations_to_projects_to_meetings_newest_first(self):
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            zenith = storage.create_organization('Zenith')
+            crm = storage.create_project(zenith, 'CRM')
+            storage.create_project(zenith, 'Web')
+            times = iter(['2026-11-01T10:00:00+00:00', '2026-11-03T10:00:00+00:00', '2026-11-02T10:00:00+00:00'])
+            with mock.patch('teams_lite.storage.utc_now', side_effect=lambda: next(times)):
+                oldest = storage.create_meeting('Kickoff', organization_id=zenith, project_id=crm)
+                newest = storage.create_meeting('Demo', organization_id=zenith, project_id=crm)
+                storage.create_meeting('Suelta')
+            for meeting in (oldest, newest):
+                storage.finish_meeting(meeting)
+            self._add_moment_screenshot(Path(d) / newest)
+            window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False))
+            window.timer.stop()
+            try:
+                page = window.preview_page
+                window.side_nav.setCurrentRow(1)
+                self.assertEqual(self._grid_texts(page), ['Cofre de reuniones', 'Zenith'])
+                self.assertIn('2 reuniones', page.grid.item(1).text())
+                self.assertEqual(page.breadcrumb_labels(), ['Organizaciones'])
+
+                self._click_card(page, 'Zenith')
+                self.assertEqual(self._grid_texts(page), ['CRM', 'Web', 'Sin proyecto'])
+                self.assertEqual(page.breadcrumb_labels(), ['Organizaciones', 'Zenith'])
+
+                self._click_card(page, 'CRM')
+                self.assertEqual(page.breadcrumb_labels(), ['Organizaciones', 'Zenith', 'CRM'])
+                self.assertIs(page.stack.currentWidget(), page.meeting_list)
+                rows = [page.meeting_list.item(row) for row in range(page.meeting_list.count())]
+                self.assertEqual([item.data(Qt.ItemDataRole.UserRole) for item in rows], [newest, oldest])
+                self.assertTrue(rows[0].text().startswith('Demo\n'))
+                self.assertEqual(rows[0].data(THUMBNAIL_ROLE), str(storage.root / newest / 'moments' / 'teams-1.jpg'))
+                self.assertIsNone(rows[1].data(THUMBNAIL_ROLE))
+                self.assertFalse(rows[0].icon().isNull())
+
+                page.go_to_level(0)
+                self.assertEqual(self._grid_texts(page), ['Cofre de reuniones', 'Zenith'])
+            finally:
+                window.close()
+
+    def test_vault_card_lists_unfiled_meetings_directly(self):
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            storage.create_organization('Zenith')
+            loose = storage.create_meeting('Suelta')
+            window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False))
+            window.timer.stop()
+            try:
+                page = window.preview_page
+                self._click_card(page, 'Cofre de reuniones')
+                self.assertEqual(page.breadcrumb_labels(), ['Organizaciones', 'Cofre de reuniones'])
+                self.assertEqual(
+                    [page.meeting_list.item(row).data(Qt.ItemDataRole.UserRole)
+                     for row in range(page.meeting_list.count())],
+                    [loose],
+                )
+            finally:
+                window.close()
+
+    def test_opening_a_meeting_from_preview_shows_it_in_teams_lite(self):
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            first = storage.create_meeting('Primera')
+            storage.finish_meeting(first)
+            second = storage.create_meeting('Segunda')
+            storage.finish_meeting(second)
+            window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False))
+            window.timer.stop()
+            try:
+                page = window.preview_page
+                window.side_nav.setCurrentRow(1)
+                self._click_card(page, 'Cofre de reuniones')
+                item = next(page.meeting_list.item(row) for row in range(page.meeting_list.count())
+                            if page.meeting_list.item(row).data(Qt.ItemDataRole.UserRole) == first)
+                page.meeting_list.itemActivated.emit(item)
+                self.application.processEvents()
+
+                self.assertIs(window.pages.currentWidget(), window.recording_page)
+                self.assertEqual(window.side_nav.currentRow(), 0)
+                self.assertEqual(window._selected_meeting_id(), first)
+            finally:
+                window.close()
+
+    @staticmethod
+    def _list_texts(widget):
+        return [widget.item(row).text() for row in range(widget.count())]
+
+    def test_admin_manages_organizations_and_projects(self):
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False))
+            window.timer.stop()
+            try:
+                admin = window.admin_page
+                errors = []
+                answers = iter(['Zenith', 'CRM', 'Portal', 'portal', 'Zenith Consulting'])
+                admin.ask_name = lambda *_args: next(answers)
+                admin.confirm = lambda *_args: True
+                admin.show_error = errors.append
+
+                admin.new_organization_button.click()
+                self.assertEqual(self._list_texts(admin.organization_list), ['Zenith'])
+                self.assertEqual(window.placement_picker.organization_combo.itemText(1), 'Zenith')
+                admin.organization_list.setCurrentRow(0)
+                self.assertTrue(admin.new_project_button.isEnabled())
+
+                admin.new_project_button.click()
+                admin.project_list.setCurrentRow(0)
+                admin.rename_project_button.click()
+                self.assertEqual(self._list_texts(admin.project_list), ['Portal'])
+                admin.new_project_button.click()  # "portal" already exists in this organization
+                self.assertEqual(len(errors), 1)
+                self.assertIn('Ya existe', errors[0])
+                self.assertEqual(self._list_texts(admin.project_list), ['Portal'])
+
+                admin.rename_organization_button.click()
+                self.assertEqual(self._list_texts(admin.organization_list), ['Zenith Consulting'])
+
+                [organization] = storage.list_organizations()
+                [project] = storage.list_projects(organization['id'])
+                meeting = storage.create_meeting('m', organization_id=organization['id'], project_id=project['id'])
+                admin.project_list.setCurrentRow(0)
+                admin.delete_project_button.click()
+                self.assertEqual(self._list_texts(admin.project_list), [])
+                admin.delete_organization_button.click()
+                self.assertEqual(self._list_texts(admin.organization_list), [])
+                self.assertEqual([row['id'] for row in storage.list_meetings(organization_id=None)], [meeting])
+                self.assertEqual(window.placement_picker.organization_combo.count(), 1)
+            finally:
+                window.close()
+
+    def test_admin_delete_asks_first_and_keeps_everything_when_cancelled(self):
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            zenith = storage.create_organization('Zenith')
+            window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False))
+            window.timer.stop()
+            try:
+                admin = window.admin_page
+                questions = []
+                admin.confirm = lambda title, text: questions.append(text) or False
+                admin.organization_list.setCurrentRow(0)
+                admin.delete_organization_button.click()
+
+                self.assertIn('Cofre de reuniones', questions[0])
+                self.assertEqual([org['id'] for org in storage.list_organizations()], [zenith])
+            finally:
+                window.close()
+
+    def test_move_dialog_starts_from_the_current_placement(self):
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            zenith = storage.create_organization('Zenith')
+            crm = storage.create_project(zenith, 'CRM')
+            dialog = MoveMeetingDialog(storage, zenith, crm)
+            try:
+                self.assertEqual(dialog.placement(), (zenith, crm))
+                dialog.picker.organization_combo.setCurrentIndex(0)
+                self.assertEqual(dialog.placement(), (None, None))
+            finally:
+                dialog.close()
+
+    def test_moving_a_meeting_from_preview_and_teams_lite(self):
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            zenith = storage.create_organization('Zenith')
+            crm = storage.create_project(zenith, 'CRM')
+            meeting = storage.create_meeting('m')
+            storage.finish_meeting(meeting)
+            window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False))
+            window.timer.stop()
+            try:
+                offered = []
+                window._choose_placement = lambda meeting_row: offered.append(meeting_row['id']) or (zenith, crm)
+                page = window.preview_page
+                window.side_nav.setCurrentRow(1)
+                self._click_card(page, 'Cofre de reuniones')
+                page.meeting_list.setCurrentRow(0)
+                self.assertTrue(page.move_button.isEnabled())
+                page.move_button.click()
+
+                self.assertEqual(offered, [meeting])
+                [moved] = storage.list_meetings()
+                self.assertEqual((moved['organization_id'], moved['project_id']), (zenith, crm))
+                self.assertIs(page.stack.currentWidget(), page.empty_label)  # the vault is now empty
+
+                window._choose_placement = lambda _meeting: (None, None)
+                window.open_meeting(meeting)
+                self.assertTrue(window.move_button.isEnabled())
+                window.move_button.click()
+                self.assertEqual([row['id'] for row in storage.list_meetings(organization_id=None)], [meeting])
+                self.assertEqual(window._selected_meeting_id(), meeting)
+
+                window._choose_placement = lambda _meeting: None  # cancelled dialog changes nothing
+                window.move_button.click()
+                self.assertEqual([row['id'] for row in storage.list_meetings(organization_id=None)], [meeting])
+            finally:
+                window.close()
+
+
+class SharingUiTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.application = QApplication.instance() or QApplication([])
+
+    def setUp(self):
+        self._dirs = [tempfile.TemporaryDirectory() for _ in range(3)]
+        self.data, self.other, self.out = (Path(directory.name) for directory in self._dirs)
+
+    def tearDown(self):
+        for directory in self._dirs:
+            directory.cleanup()
+
+    def _wait_for(self, condition, seconds=5):
+        deadline = time.monotonic() + seconds
+        while not condition() and time.monotonic() < deadline:
+            self.application.processEvents()
+            time.sleep(0.01)
+        self.assertTrue(condition())
+
+    def _window(self):
+        window = MainWindow(AppConfig(data_dir=self.data, auto_transcribe=False))
+        window.timer.stop()
+        window._show_error = mock.Mock()
+        return window
+
+    def _package_from_other_pc(self, organization=None, project=None):
+        source = Storage(self.other)
+        placement = {}
+        if organization:
+            placement['organization_id'] = source.create_organization(organization)
+            if project:
+                placement['project_id'] = source.create_project(placement['organization_id'], project)
+        meeting = source.create_meeting('Compartida', **placement)
+        (source.root / meeting / 'transcript.txt').write_text('[00:00:01.000] Local: Hola\n', encoding='utf-8')
+        source.finish_meeting(meeting)
+        return export_meeting(source, meeting, self.out / 'compartida.zip')
+
+    def test_export_options_leave_audio_off_by_default(self):
+        dialog = ExportOptionsDialog()
+        try:
+            self.assertFalse(dialog.include_audio_checkbox.isChecked())
+            self.assertFalse(dialog.include_audio())
+            dialog.include_audio_checkbox.setChecked(True)
+            self.assertTrue(dialog.include_audio())
+        finally:
+            dialog.close()
+
+    def test_exporting_from_teams_lite_and_from_preview(self):
+        storage = Storage(self.data)
+        meeting = storage.create_meeting('Demo')
+        storage.finish_meeting(meeting)
+        window = self._window()
+        try:
+            asked = []
+            window._choose_export = lambda row: asked.append(row['id']) or (self.out / 'demo.zip', False)
+            window.open_meeting(meeting)
+            self.assertTrue(window.export_button.isEnabled())
+            window.export_button.click()
+            self._wait_for(lambda: (self.out / 'demo.zip').is_file() and 'Exportada' in window.status_label.text())
+            self.assertEqual(asked, [meeting])
+            self.assertEqual(read_package(self.out / 'demo.zip')['meeting']['title'], 'Demo')
+
+            window._choose_export = lambda _row: (self.out / 'preview.zip', True)
+            window.preview_page.export_meeting.emit(meeting)
+            self._wait_for(lambda: 'preview.zip' in window.status_label.text())
+            self.assertTrue(read_package(self.out / 'preview.zip')['includes_audio'])
+
+            window._choose_export = lambda _row: None  # cancelled
+            window.export_button.click()
+            self.assertEqual(sorted(path.name for path in self.out.iterdir()), ['demo.zip', 'preview.zip'])
+            window._show_error.assert_not_called()
+        finally:
+            window.close()
+
+    def test_import_lands_in_the_project_being_browsed(self):
+        package = self._package_from_other_pc('Otra empresa', 'Otro proyecto')
+        storage = Storage(self.data)
+        zenith = storage.create_organization('Zenith')
+        crm = storage.create_project(zenith, 'CRM')
+        window = self._window()
+        try:
+            offered = []
+            window._choose_import_file = lambda: package
+            window._choose_import_placement = lambda org, proj, manifest: offered.append((org, proj)) or (org, proj)
+            page = window.preview_page
+            window.side_nav.setCurrentRow(1)
+            LibraryUiTests._click_card(page, 'Zenith')
+            LibraryUiTests._click_card(page, 'CRM')
+            page.import_button.click()
+
+            self._wait_for(lambda: len(storage.list_meetings(project_id=crm)) == 1)
+            self.assertEqual(offered, [(zenith, crm)])
+            [meeting] = storage.list_meetings(project_id=crm)
+            self.assertEqual(meeting['title'], 'Compartida')
+            self._wait_for(lambda: page.meeting_list.count() == 1)
+            self.assertIn('importada', window.status_label.text())
+        finally:
+            window.close()
+
+    def test_import_suggests_the_original_organization_and_project_by_name(self):
+        package = self._package_from_other_pc('Zenith', 'CRM')
+        storage = Storage(self.data)
+        zenith = storage.create_organization('zenith')
+        crm = storage.create_project(zenith, 'crm')
+        window = self._window()
+        try:
+            offered = []
+            window._choose_import_file = lambda: package
+            window._choose_import_placement = lambda org, proj, manifest: offered.append((org, proj, manifest['project'])) or None
+            window.preview_page.import_button.click()
+
+            self.assertEqual(offered, [(zenith, crm, 'CRM')])
+            self.assertEqual(storage.list_meetings(), [])  # cancelled at the placement step
+        finally:
+            window.close()
+
+    def test_invalid_package_is_reported_and_imports_nothing(self):
+        not_a_package = self.out / 'fake.zip'
+        not_a_package.write_text('hola', encoding='utf-8')
+        storage = Storage(self.data)
+        window = self._window()
+        try:
+            window._choose_import_file = lambda: not_a_package
+            window._choose_import_placement = mock.Mock()
+            window.preview_page.import_button.click()
+
+            window._show_error.assert_called_once()
+            self.assertIn('paquete', window._show_error.call_args[0][0])
+            window._choose_import_placement.assert_not_called()
+            self.assertEqual(storage.list_meetings(), [])
+        finally:
+            window.close()
 
 
 if __name__ == '__main__':

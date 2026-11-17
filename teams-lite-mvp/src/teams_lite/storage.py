@@ -61,6 +61,35 @@ class _Connection(sqlite3.Connection):
             self.close()
 
 
+_IMPORTABLE_STATUSES = {'completed', 'interrupted', 'failed'}
+
+ANY = object()
+"""Filter value for Storage.list_meetings meaning 'do not filter on this column'."""
+
+
+def _clean_name(name):
+    name = re.sub(r'\s+', ' ', str(name or '')).strip()
+    if not name:
+        raise ValueError('Escribe un nombre')
+    return name
+
+
+def _check_unique(db, query, params, message):
+    if db.execute(query, params).fetchone() is not None:
+        raise ValueError(message)
+
+
+def _check_placement(db, organization_id, project_id):
+    """A meeting sits in the vault (no organization), in an organization, or in one of its projects."""
+    if organization_id is not None and db.execute(
+            'SELECT 1 FROM organizations WHERE id=?', (organization_id,)).fetchone() is None:
+        raise ValueError('Organización desconocida')
+    if project_id is not None and db.execute(
+            'SELECT 1 FROM projects WHERE id=? AND organization_id IS ?',
+            (project_id, organization_id)).fetchone() is None:
+        raise ValueError('El proyecto no pertenece a la organización elegida')
+
+
 class Storage:
     def __init__(self, root):
         self.root = Path(root).resolve()
@@ -84,7 +113,21 @@ class Storage:
                     id INTEGER PRIMARY KEY, meeting_id TEXT NOT NULL REFERENCES meetings(id),
                     timestamp_utc TEXT NOT NULL, monotonic REAL NOT NULL,
                     kind TEXT NOT NULL, detail TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS organizations (
+                    id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                    created_utc TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS projects (
+                    id TEXT PRIMARY KEY, organization_id TEXT NOT NULL REFERENCES organizations(id),
+                    name TEXT NOT NULL COLLATE NOCASE, created_utc TEXT NOT NULL,
+                    UNIQUE(organization_id, name));
             ''')
+            # Additive migration: older databases get the placement columns, rows stay untouched.
+            # A meeting without an organization lives in the "Cofre de reuniones".
+            columns = {row['name'] for row in db.execute('PRAGMA table_info(meetings)')}
+            if 'organization_id' not in columns:
+                db.execute('ALTER TABLE meetings ADD COLUMN organization_id TEXT REFERENCES organizations(id)')
+            if 'project_id' not in columns:
+                db.execute('ALTER TABLE meetings ADD COLUMN project_id TEXT REFERENCES projects(id)')
         self.recover()
         self._purge_quarantine()
 
@@ -94,17 +137,29 @@ class Storage:
         db.execute('PRAGMA foreign_keys=ON')
         return db
 
-    def create_meeting(self, title='Meeting'):
+    def _unique_meeting_id(self, db, base):
+        # Windows folder names are case-insensitive, so compare casefolded.
+        taken = {row['id'].casefold() for row in db.execute('SELECT id FROM meetings')}
+        taken.update(entry.name.casefold() for entry in self.root.iterdir())
+        meeting_id, copy = base, 2
+        while meeting_id.casefold() in taken:
+            meeting_id, copy = f'{base} ({copy})', copy + 1
+        return meeting_id
+
+    def get_meeting(self, meeting_id):
+        with self._connect() as db:
+            row = db.execute('SELECT * FROM meetings WHERE id=?', (meeting_id,)).fetchone()
+            return dict(row) if row is not None else None
+
+    def create_meeting(self, title='Meeting', organization_id=None, project_id=None):
         base = meeting_folder_name(title, local_now())
         with self._connect() as db:
-            # Windows folder names are case-insensitive, so compare casefolded.
-            taken = {row['id'].casefold() for row in db.execute('SELECT id FROM meetings')}
-            taken.update(entry.name.casefold() for entry in self.root.iterdir())
-            meeting_id, copy = base, 2
-            while meeting_id.casefold() in taken:
-                meeting_id, copy = f'{base} ({copy})', copy + 1
-            db.execute('INSERT INTO meetings VALUES (?,?,?,?,?)',
-                       (meeting_id, title, utc_now(), None, 'recording'))
+            _check_placement(db, organization_id, project_id)
+            meeting_id = self._unique_meeting_id(db, base)
+            db.execute(
+                'INSERT INTO meetings (id, title, started_utc, ended_utc, status, organization_id, project_id) '
+                'VALUES (?,?,?,?,?,?,?)',
+                (meeting_id, title, utc_now(), None, 'recording', organization_id, project_id))
         (self.root / meeting_id).mkdir(exist_ok=True)
         return meeting_id
 
@@ -113,9 +168,160 @@ class Storage:
             db.execute('UPDATE meetings SET status=?, ended_utc=? WHERE id=?',
                        (status, utc_now(), meeting_id))
 
-    def list_meetings(self):
+    def list_meetings(self, *, organization_id=ANY, project_id=ANY):
+        """Newest first. A filter left as ANY is ignored; None matches the vault or 'no project'."""
+        clauses, params = [], []
+        for column, value in (('organization_id', organization_id), ('project_id', project_id)):
+            if value is ANY:
+                continue
+            if value is None:
+                clauses.append(f'{column} IS NULL')
+            else:
+                clauses.append(f'{column}=?')
+                params.append(value)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ''
         with self._connect() as db:
-            return [dict(row) for row in db.execute('SELECT * FROM meetings ORDER BY started_utc DESC')]
+            return [dict(row) for row in db.execute(
+                f'SELECT * FROM meetings{where} ORDER BY started_utc DESC', params)]
+
+    def adopt_meeting(self, staging, meeting, *, organization_id=None, project_id=None,
+                      streams=(), segments=(), events=()):
+        """Records an imported meeting whose files were extracted to `staging`, all or nothing.
+
+        `staging` must be a folder directly under the data root; it becomes the meeting folder.
+        Streams and segments get fresh ids, so importing the same package twice never collides.
+        Each segment names its extracted WAV with `file`, relative to `staging`.
+        """
+        staging = Path(staging).resolve()
+        if staging.parent != self.root or not staging.is_dir():
+            raise ValueError('Carpeta de importación no válida')
+        started = datetime.fromisoformat(meeting['started_utc'])
+        moment = started.astimezone() if started.tzinfo else started
+        status = meeting['status'] if meeting['status'] in _IMPORTABLE_STATUSES else 'completed'
+        db = self._connect()
+        moved = False
+        try:
+            db.execute('BEGIN IMMEDIATE')
+            _check_placement(db, organization_id, project_id)
+            meeting_id = self._unique_meeting_id(db, meeting_folder_name(meeting['title'], moment))
+            final_dir = self.root / meeting_id
+            db.execute(
+                'INSERT INTO meetings (id, title, started_utc, ended_utc, status, organization_id, project_id) '
+                'VALUES (?,?,?,?,?,?,?)',
+                (meeting_id, meeting['title'], meeting['started_utc'], meeting['ended_utc'], status,
+                 organization_id, project_id))
+            stream_ids = {}
+            for stream in streams:
+                stream_ids[stream['id']] = (uuid.uuid4().hex, stream['kind'])
+                db.execute('INSERT INTO streams VALUES (?,?,?,?,?)',
+                           (stream_ids[stream['id']][0], meeting_id, stream['kind'],
+                            stream['sample_rate'], stream['channels']))
+            for segment in segments:
+                stream_id, kind = stream_ids[segment['stream_id']]
+                name = f"{kind}-{stream_id}-{segment['sequence']:06d}.wav"
+                os.replace(staging / segment['file'], staging / name)
+                final = final_dir / name
+                db.execute(
+                    'INSERT INTO segments (id, stream_id, sequence, started_monotonic, started_utc, ended_utc, '
+                    'path, temp_path, frames, status) VALUES (?,?,?,?,?,?,?,?,?,?)',
+                    (uuid.uuid4().hex, stream_id, segment['sequence'], segment['started_monotonic'],
+                     segment['started_utc'], segment['ended_utc'], str(final), str(final.with_suffix('.pcm.part')),
+                     segment['frames'], segment['status']))
+            for event in events:
+                db.execute('INSERT INTO events (meeting_id,timestamp_utc,monotonic,kind,detail) VALUES (?,?,?,?,?)',
+                           (meeting_id, event['timestamp_utc'], event['monotonic'], event['kind'], event['detail']))
+            db.execute('INSERT INTO events (meeting_id,timestamp_utc,monotonic,kind,detail) VALUES (?,?,?,?,?)',
+                       (meeting_id, utc_now(), time.monotonic(), 'imported', 'Importada desde un paquete'))
+            os.replace(staging, final_dir)
+            moved = True
+            db.commit()
+        except Exception:
+            db.rollback()
+            if moved and final_dir.exists() and not staging.exists():
+                os.replace(final_dir, staging)
+            raise
+        finally:
+            db.close()
+        return meeting_id
+
+    def move_meeting(self, meeting_id, organization_id, project_id):
+        """Files a meeting elsewhere; only metadata changes, its folder stays where it is."""
+        with self._connect() as db:
+            _check_placement(db, organization_id, project_id)
+            moved = db.execute('UPDATE meetings SET organization_id=?, project_id=? WHERE id=?',
+                               (organization_id, project_id, meeting_id))
+            if moved.rowcount == 0:
+                raise ValueError('Reunión desconocida')
+
+    def create_organization(self, name):
+        name = _clean_name(name)
+        organization_id = uuid.uuid4().hex
+        with self._connect() as db:
+            _check_unique(db, 'SELECT 1 FROM organizations WHERE name=?', (name,),
+                          f'Ya existe una organización llamada "{name}"')
+            db.execute('INSERT INTO organizations (id, name, created_utc) VALUES (?,?,?)',
+                       (organization_id, name, utc_now()))
+        return organization_id
+
+    def rename_organization(self, organization_id, name):
+        name = _clean_name(name)
+        with self._connect() as db:
+            _check_unique(db, 'SELECT 1 FROM organizations WHERE name=? AND id<>?', (name, organization_id),
+                          f'Ya existe una organización llamada "{name}"')
+            if db.execute('UPDATE organizations SET name=? WHERE id=?', (name, organization_id)).rowcount == 0:
+                raise ValueError('Organización desconocida')
+
+    def delete_organization(self, organization_id):
+        """Deletes the organization and its projects; its meetings go back to the vault."""
+        with self._connect() as db:
+            db.execute('UPDATE meetings SET organization_id=NULL, project_id=NULL WHERE organization_id=?',
+                       (organization_id,))
+            db.execute('DELETE FROM projects WHERE organization_id=?', (organization_id,))
+            db.execute('DELETE FROM organizations WHERE id=?', (organization_id,))
+
+    def list_organizations(self):
+        with self._connect() as db:
+            return [dict(row) for row in db.execute('''
+                SELECT organizations.*,
+                       (SELECT COUNT(*) FROM meetings WHERE meetings.organization_id=organizations.id)
+                           AS meeting_count
+                FROM organizations ORDER BY name COLLATE NOCASE''')]
+
+    def create_project(self, organization_id, name):
+        name = _clean_name(name)
+        project_id = uuid.uuid4().hex
+        with self._connect() as db:
+            if db.execute('SELECT 1 FROM organizations WHERE id=?', (organization_id,)).fetchone() is None:
+                raise ValueError('Organización desconocida')
+            _check_unique(db, 'SELECT 1 FROM projects WHERE organization_id=? AND name=?', (organization_id, name),
+                          f'Ya existe un proyecto llamado "{name}" en esta organización')
+            db.execute('INSERT INTO projects (id, organization_id, name, created_utc) VALUES (?,?,?,?)',
+                       (project_id, organization_id, name, utc_now()))
+        return project_id
+
+    def rename_project(self, project_id, name):
+        name = _clean_name(name)
+        with self._connect() as db:
+            project = db.execute('SELECT organization_id FROM projects WHERE id=?', (project_id,)).fetchone()
+            if project is None:
+                raise ValueError('Proyecto desconocido')
+            _check_unique(db, 'SELECT 1 FROM projects WHERE organization_id=? AND name=? AND id<>?',
+                          (project['organization_id'], name, project_id),
+                          f'Ya existe un proyecto llamado "{name}" en esta organización')
+            db.execute('UPDATE projects SET name=? WHERE id=?', (name, project_id))
+
+    def delete_project(self, project_id):
+        """Deletes the project; its meetings stay in the organization without a project."""
+        with self._connect() as db:
+            db.execute('UPDATE meetings SET project_id=NULL WHERE project_id=?', (project_id,))
+            db.execute('DELETE FROM projects WHERE id=?', (project_id,))
+
+    def list_projects(self, organization_id):
+        with self._connect() as db:
+            return [dict(row) for row in db.execute('''
+                SELECT projects.*,
+                       (SELECT COUNT(*) FROM meetings WHERE meetings.project_id=projects.id) AS meeting_count
+                FROM projects WHERE organization_id=? ORDER BY name COLLATE NOCASE''', (organization_id,))]
 
     def delete_meeting(self, meeting_id):
         meeting_dir = (self.root / meeting_id).resolve()
@@ -157,9 +363,11 @@ class Storage:
             _purge_directory(quarantine)
 
     def _purge_quarantine(self):
-        for leftover in self.root.glob('.delete-*'):
-            if leftover.is_dir():
-                _purge_directory(leftover, attempts=1)
+        # .delete-* holds deleted meetings, .import-* an import interrupted before it was recorded.
+        for pattern in ('.delete-*', '.import-*'):
+            for leftover in self.root.glob(pattern):
+                if leftover.is_dir():
+                    _purge_directory(leftover, attempts=1)
 
     def create_stream(self, meeting_id, kind, sample_rate, channels):
         stream_id = uuid.uuid4().hex

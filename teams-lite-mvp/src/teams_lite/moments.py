@@ -83,6 +83,21 @@ def capture_moment(
     return moment
 
 
+def contained_image(image) -> str | None:
+    """A moment image path relative to its meeting folder, or None when it is missing or could leave it.
+
+    moments.jsonl can arrive inside an imported package, so an absolute, drive, UNC or ".." path
+    must never be opened: on Windows it could reach another folder or a network share.
+    """
+    if not isinstance(image, str) or not image or "\\" in image or ":" in image or image.startswith("/"):
+        return None
+    parts = image.split("/")
+    # Windows drops trailing dots and spaces from names, so ".. " would behave like "..".
+    if any(part in ("", ".", "..") or part != part.rstrip(" .") for part in parts):
+        return None
+    return image
+
+
 def load_moments(meeting_dir: str | Path) -> list[dict]:
     path = Path(meeting_dir) / MOMENTS_FILE
     if not path.is_file():
@@ -94,6 +109,7 @@ def load_moments(meeting_dir: str | Path) -> list[dict]:
         except ValueError:
             continue  # a line cut by a crash must not hide the other moments
         if isinstance(moment, dict) and isinstance(moment.get("offset_seconds"), (int, float)):
+            moment["image"] = contained_image(moment.get("image"))
             moments.append(moment)
     return sorted(moments, key=lambda moment: moment["offset_seconds"])
 
