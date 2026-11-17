@@ -88,6 +88,35 @@ class MomentTests(unittest.TestCase):
                 handle.write("{roto\n")
             self.assertEqual([12.0, 90.0], [moment["offset_seconds"] for moment in load_moments(meeting_dir)])
 
+    def test_images_outside_the_meeting_folder_are_dropped(self):
+        # moments.jsonl may come from an imported package: an absolute, UNC or ".." image path
+        # must never be opened, or a preview could reach another folder or a network share.
+        with tempfile.TemporaryDirectory() as directory:
+            meeting = Path(directory) / "meeting"
+            (meeting / "moments").mkdir(parents=True)
+            Image.new("RGB", (8, 8)).save(meeting / "moments" / "ok.jpg")
+            outside = Path(directory) / "outside.jpg"
+            Image.new("RGB", (8, 8)).save(outside)
+            images = [
+                "moments/ok.jpg",
+                str(outside),
+                "\\\\attacker\\share\\x.jpg",
+                "//attacker/share/x.jpg",
+                "../outside.jpg",
+                "moments/../../outside.jpg",
+                "C:outside.jpg",
+                "moments\\..\\..\\outside.jpg",
+                "",
+                "moments/ok.jpg ",
+            ]
+            lines = [json.dumps({"offset_seconds": float(index), "image": image}) for index, image in enumerate(images)]
+            (meeting / "moments.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+            moments = load_moments(meeting)
+
+            self.assertEqual(len(moments), len(images))  # the moments stay, only the unsafe image goes
+            self.assertEqual([moment["image"] for moment in moments], ["moments/ok.jpg"] + [None] * (len(images) - 1))
+
     def test_moments_are_summarized_for_the_minutes(self):
         moments = [
             {"offset_seconds": 754.2, "note": "Presupuesto aprobado", "image": "moments/a.jpg", "problem": None},

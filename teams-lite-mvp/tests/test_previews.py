@@ -40,6 +40,20 @@ class MeetingThumbnailTests(unittest.TestCase):
 
             self.assertEqual(meeting_thumbnail(meeting), frames / 'teams-20261117T100000000000Z.png')
 
+    def test_moment_images_outside_the_meeting_are_never_used(self):
+        with tempfile.TemporaryDirectory() as d:
+            meeting = Path(d) / 'meeting'
+            meeting.mkdir()
+            outside = Path(d) / 'outside.jpg'
+            outside.write_bytes(b'jpg')
+            _write_moments(meeting, [
+                {'offset_seconds': 1.0, 'image': str(outside)},
+                {'offset_seconds': 2.0, 'image': '../outside.jpg'},
+                {'offset_seconds': 3.0, 'image': '\\\\attacker\\share\\x.jpg'},
+            ])
+
+            self.assertIsNone(meeting_thumbnail(meeting))
+
     def test_meeting_without_screenshots_has_no_thumbnail(self):
         with tempfile.TemporaryDirectory() as d:
             self.assertIsNone(meeting_thumbnail(Path(d)))

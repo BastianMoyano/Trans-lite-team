@@ -13,10 +13,14 @@ def meeting_thumbnail(meeting_dir: str | Path) -> Path | None:
     meeting_dir = Path(meeting_dir)
     if not meeting_dir.is_dir():
         return None
-    for moment in load_moments(meeting_dir):  # already sorted by offset
+    root = meeting_dir.resolve()
+    for moment in load_moments(meeting_dir):  # sorted by offset; unsafe image paths already dropped
         image = moment.get("image")
-        if isinstance(image, str) and image and (meeting_dir / image).is_file():
-            return meeting_dir / image
+        if image is None:
+            continue
+        candidate = meeting_dir / image
+        if candidate.resolve().is_relative_to(root) and candidate.is_file():  # defence in depth
+            return candidate
     frames = meeting_dir / VISUAL_FRAMES_DIR
     if frames.is_dir():
         # Names carry the UTC capture stamp, so the alphabetical order is chronological;
