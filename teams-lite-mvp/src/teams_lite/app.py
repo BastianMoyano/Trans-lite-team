@@ -78,7 +78,8 @@ from .library_ui import (
 from .chat_ui import ChatPanel
 from .minutes import CLI_LABELS, MinutesError, generate_minutes, load_minutes
 from .previews import meeting_screenshots
-from .mascot import load_mascot_settings, resolve_placement
+from .mascot import load_mascot_settings, resolve_placement, save_mascot_settings
+from .mascot_ui import MascotSettingsPage, MascotWidget
 from .moments import capture_moment, format_offset, load_moments, moments_for_minutes
 from .ocr import load_participants, merge_participants, read_teams_names
 from .sharing import PackageError, export_meeting, import_meeting, read_package, suggest_placement
@@ -193,6 +194,41 @@ QLabel#adminSummary {
     background: #172A2A;
     border: 1px solid #23413E;
     border-radius: 8px;
+    color: #9EE6DA;
+    font-size: 12px;
+    font-weight: 600;
+}
+QFrame#mascotBody {
+    background: #13201F;
+    border: 1px solid #2D5A54;
+    border-radius: 24px;
+}
+QPushButton#mascotRecord, QPushButton#mascotAction {
+    min-height: 32px;
+    padding: 0 12px;
+    border-radius: 16px;
+    font-size: 13px;
+    font-weight: 600;
+}
+QPushButton#mascotRecord {
+    background: #46C7B5;
+    border: none;
+    color: #0F1B1C;
+}
+QPushButton#mascotRecord[recording="true"] {
+    background: #F87171;
+    color: #1A0E0E;
+}
+QPushButton#mascotAction {
+    background: #1E2E2D;
+    border: 1px solid #2D5A54;
+    color: #DCEFEC;
+}
+QPushButton#mascotAction:disabled {
+    color: #5E6E6C;
+    border-color: #22302F;
+}
+QLabel#mascotTimer {
     color: #9EE6DA;
     font-size: 12px;
     font-weight: 600;
@@ -563,6 +599,10 @@ _ICON_PATHS = {
     "image": (
         '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/>'
         '<path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/>'
+    ),
+    "smile": (
+        '<circle cx="12" cy="12" r="9"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/>'
+        '<line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/>'
     ),
     "plus": '<path d="M12 5v14"/><path d="M5 12h14"/>',
     "layers": (
@@ -1002,6 +1042,7 @@ class MainWindow(QMainWindow):
         self.recording_page = scroll
         self.preview_page = self._build_preview_page()
         self.admin_page = self._build_admin_page()
+        self.mascot_page = self._build_mascot()
 
         self.pages = QStackedWidget()
         self.side_nav = QListWidget()
@@ -1012,6 +1053,7 @@ class MainWindow(QMainWindow):
             ("Grabar", "app", self.recording_page),
             ("Biblioteca", "image", self.preview_page),
             ("Organización", "folder", self.admin_page),
+            ("Mascota", "smile", self.mascot_page),
         ):
             item = QListWidgetItem(QIcon(_render_svg(icon, COLORS["accent"], 16)), label)
             item.setSizeHint(QSize(0, 44))
@@ -1129,7 +1171,57 @@ class MainWindow(QMainWindow):
         page.changed.connect(self._library_changed)
         return page
 
+    def _build_mascot(self) -> QWidget:
+        """The floating mascot and its Mascota section, both driven by data/mascot.json."""
+        settings = load_mascot_settings(self.store.root)
+        self.mascot = MascotWidget()
+        self.mascot.setStyleSheet(self.styleSheet())  # a separate top-level window: it does not inherit it
+        self.mascot.record_requested.connect(self._toggle_recording_from_mascot)
+        self.mascot.capture_requested.connect(lambda: self.mark_moment(from_hotkey=True))
+        self.mascot.ocr_requested.connect(lambda: self.capture_ocr())
+        self.mascot.open_requested.connect(self._open_from_mascot)
+        self.mascot.moved.connect(self._mascot_moved)
+        self.mascot.adjustSize()
+        if settings.position is not None:
+            self.mascot.move(*settings.position)
+        else:
+            self._place_mascot_by_default()
+        self.mascot.setVisible(settings.enabled)
+        page = MascotSettingsPage(self.store, settings)
+        page.changed.connect(self._mascot_settings_changed)
+        return page
+
+    def _place_mascot_by_default(self) -> None:
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            return
+        area = screen.availableGeometry()
+        self.mascot.move(area.right() - self.mascot.width() - 24, area.bottom() - self.mascot.height() - 24)
+
+    def _toggle_recording_from_mascot(self) -> None:
+        if self.recorder is not None:
+            self.stop_recording()
+        else:
+            self.quick_start_recording()
+
+    def _open_from_mascot(self) -> None:
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def _mascot_moved(self, x: int, y: int) -> None:
+        settings = self.mascot_page.settings()
+        settings.position = (x, y)
+        save_mascot_settings(self.store.root, settings)
+
+    def _mascot_settings_changed(self, settings) -> None:
+        save_mascot_settings(self.store.root, settings)
+        self.mascot.setVisible(settings.enabled)
+        if settings.position is None:
+            self._place_mascot_by_default()
+
     def _library_changed(self) -> None:
+        self.mascot_page.reload_placements()
         self.placement_picker.reload()
         self.preview_page.refresh()
         self._refresh()
@@ -1797,6 +1889,10 @@ class MainWindow(QMainWindow):
         self.start_button.setEnabled(not recording)
         self.stop_button.setVisible(recording)
         self.stop_button.setEnabled(recording and not finalizing)
+        mascot = getattr(self, "mascot", None)
+        if mascot is not None:
+            mascot.set_recording(recording, getattr(self, "_recording_origin", None))
+            mascot.record_button.setEnabled(not finalizing)
 
     def start_recording(self) -> None:
         """Record with the title, organization and project chosen in the recording card."""
@@ -2593,6 +2689,7 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         self._release_moment_hotkey()
+        self.mascot.close()
         event.accept()
 
 

@@ -11,7 +11,7 @@ Branch: feat/mascot-quick-actions · Delivery: ask-on-risk · Test runner: `.ven
 ## Tasks
 - T1 [S1] inline — hotkey retry while recording + events moment_hotkey_ready / moment_hotkey_unavailable / moment_hotkey_pressed — done, RED (no retry timer, no events) → GREEN 2; tests stop recording before closing so a RED fails instead of hanging on the close confirmation
 - T2 [S3,S4] inline — mascot settings (load/save, validation) and quick start with defaults — done, RED (no module) → GREEN 6; start_recording and quick_start_recording share _start_recording; quick start moves the recording card placement so the recent list shows it
-- T3 [S2,S4] inline — mascot widget, Mascota section, wiring to recording, capture and OCR — pending
+- T3 [S2,S4] inline — mascot widget, Mascota section, wiring to recording, capture and OCR — done, RED (no mascot) → GREEN 4 (incl. deleted default organization falls back to the Cofre); mascot is a separate top-level window, so it gets the app stylesheet explicitly; offscreen captures of the idle and recording mascot and the Mascota section
 - T4 [S1-S4] inline — README — pending
 
 ## Log

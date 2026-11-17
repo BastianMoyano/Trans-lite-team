@@ -40,7 +40,7 @@ class AppTests(unittest.TestCase):
                 self.assertEqual(window.brand_tagline.text(), 'Memoria de tus reuniones')
                 self.assertEqual(
                     [window.side_nav.item(index).text() for index in range(window.side_nav.count())],
-                    ['Grabar', 'Biblioteca', 'Organización'],
+                    ['Grabar', 'Biblioteca', 'Organización', 'Mascota'],
                 )
                 self.assertTrue(all(not window.side_nav.item(index).icon().isNull()
                                     for index in range(window.side_nav.count())))
@@ -335,6 +335,130 @@ class QuickStartTests(unittest.TestCase):
                 self.assertIn('Cofre de reuniones', window.status_label.text())
             finally:
                 self._close(window)
+
+
+class MascotUiTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.application = QApplication.instance() or QApplication([])
+
+    _close = lambda self, window: MomentHotkeyTests._close(self, window)
+
+    def _window(self, d):
+        window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False, ocr_enabled=False))
+        window.timer.stop()
+        window._show_error = mock.Mock(side_effect=AssertionError('no dialog expected'))
+        return window
+
+    def test_mascot_floats_and_runs_the_quick_actions(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch('teams_lite.app.Recorder', _FakeRecorder):
+            window = self._window(d)
+            try:
+                mascot = window.mascot
+                self.assertFalse(mascot.isHidden())
+                self.assertTrue(mascot.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)
+                self.assertTrue(mascot.windowFlags() & Qt.WindowType.FramelessWindowHint)
+                self.assertEqual(mascot.record_button.text(), 'Grabar')
+                self.assertFalse(mascot.capture_button.isEnabled())
+                self.assertFalse(mascot.ocr_button.isEnabled())
+
+                mascot.record_button.click()  # starts at once with the defaults
+                self.assertIsNotNone(window.recorder)
+                self.assertEqual(window.store.get_meeting(window.meeting_id)['title'], 'Reunión rápida')
+                self.assertEqual(mascot.record_button.text(), 'Detener')
+                self.assertTrue(mascot.capture_button.isEnabled())
+                self.assertTrue(mascot.ocr_button.isEnabled())
+                self.assertFalse(mascot.timer_label.isHidden())
+
+                with mock.patch.object(window, 'mark_moment') as mark, mock.patch.object(window, 'capture_ocr') as ocr:
+                    mascot.capture_button.click()
+                    mascot.ocr_button.click()
+                mark.assert_called_once_with(from_hotkey=True)
+                ocr.assert_called_once_with()
+
+                mascot.record_button.click()  # stops
+                OcrAttendeeTests._wait_until_stopped(self, window)
+                self.assertIsNone(window.recorder)
+                self.assertEqual(mascot.record_button.text(), 'Grabar')
+                self.assertFalse(mascot.capture_button.isEnabled())
+
+                window.showMinimized()
+                mascot.open_requested.emit()  # double click on the mascot
+                self.assertFalse(window.isMinimized())
+            finally:
+                self._close(window)
+            self.assertTrue(mascot.isHidden())  # closing Teams Lite closes its mascot
+
+    def test_mascot_section_sets_the_defaults_and_visibility(self):
+        from teams_lite.mascot import load_mascot_settings
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            zenith = storage.create_organization('Zenith')
+            crm = storage.create_project(zenith, 'CRM')
+            window = self._window(d)
+            try:
+                page = window.mascot_page
+                window.side_nav.setCurrentRow(3)
+                self.assertIs(window.pages.currentWidget(), page)
+                self.assertEqual(page.title_input.text(), 'Reunión rápida')
+
+                page.title_input.setText('Daily ventas')
+                page.title_input.editingFinished.emit()
+                picker = page.placement_picker
+                picker.organization_combo.setCurrentIndex(picker.organization_combo.findData(zenith))
+                picker.project_combo.setCurrentIndex(picker.project_combo.findData(crm))
+                saved = load_mascot_settings(d)
+                self.assertEqual((saved.title, saved.organization_id, saved.project_id), ('Daily ventas', zenith, crm))
+
+                page.show_checkbox.setChecked(False)
+                self.assertTrue(window.mascot.isHidden())
+                self.assertFalse(load_mascot_settings(d).enabled)
+            finally:
+                window.close()
+
+            reopened = self._window(d)
+            try:
+                self.assertTrue(reopened.mascot.isHidden())
+                self.assertFalse(reopened.mascot_page.show_checkbox.isChecked())
+                self.assertEqual(reopened.mascot_page.title_input.text(), 'Daily ventas')
+            finally:
+                reopened.close()
+
+    def test_deleting_the_default_organization_moves_the_default_to_the_vault(self):
+        from teams_lite.mascot import MascotSettings, load_mascot_settings, save_mascot_settings
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            zenith = storage.create_organization('Zenith')
+            save_mascot_settings(d, MascotSettings(title='Daily', organization_id=zenith))
+            window = self._window(d)
+            try:
+                admin = window.admin_page
+                admin.confirm = lambda *_args: True
+                admin.organization_list.setCurrentRow(0)
+                admin.delete_organization_button.click()
+
+                saved = load_mascot_settings(d)
+                self.assertEqual((saved.title, saved.organization_id), ('Daily', None))
+                self.assertEqual(window.mascot_page.placement_picker.organization_combo.currentText(),
+                                 'Cofre de reuniones')
+            finally:
+                window.close()
+
+    def test_mascot_remembers_where_it_was_dropped(self):
+        from teams_lite.mascot import load_mascot_settings
+        with tempfile.TemporaryDirectory() as d:
+            window = self._window(d)
+            try:
+                window.mascot.move(140, 260)
+                window.mascot.moved.emit(140, 260)
+                self.assertEqual(load_mascot_settings(d).position, (140, 260))
+            finally:
+                window.close()
+            reopened = self._window(d)
+            try:
+                self.assertEqual((reopened.mascot.x(), reopened.mascot.y()), (140, 260))
+            finally:
+                reopened.close()
 
 
 class MomentHotkeyTests(unittest.TestCase):
@@ -1281,7 +1405,7 @@ class LibraryUiTests(unittest.TestCase):
             window.timer.stop()
             try:
                 labels = [window.side_nav.item(row).text() for row in range(window.side_nav.count())]
-                self.assertEqual(labels, ['Grabar', 'Biblioteca', 'Organización'])
+                self.assertEqual(labels, ['Grabar', 'Biblioteca', 'Organización', 'Mascota'])
                 self.assertIs(window.pages.currentWidget(), window.recording_page)
                 self.assertTrue(window.recording_page.isAncestorOf(window.start_button))
 
