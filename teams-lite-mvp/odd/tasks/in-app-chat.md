@@ -12,7 +12,7 @@ Branch: feat/in-app-chat · Delivery: ask-on-risk · Test runner: `.venv\Scripts
 ## Tasks
 - T1 [S1,S3] inline — chat engine: ChatSession over both CLIs, terminal launch removed, untrusted titles sanitized in instructions/index — Risk: item 2 (external CLI process and its read-only tool flags) — done, RED import error → GREEN 13 chat tests
 - T2 [S1,S2,S3] inline — ChatPanel UI, Teams Lite "Chat" tab, Vista previa side panel, README — done, RED (app import) → GREEN 6 UI tests; suite 194 OK; offscreen screenshots of both placements
-- T3 [S4] inline — visual identity and usability pass across the shell, navigation, meeting actions and content switcher — complete; route: no writer trigger, one coherent UI change; evidence: RED missing `COLORS['accent']` and responsive overview → GREEN focused 65 tests, full suite 195 OK, offscreen screenshots inspected at 1190×780 and 1010×600; Risk: none (presentation and discoverability only)
+- T3 [S4] inline — visual identity and usability pass across the shell, navigation, meeting actions and content switcher — complete (158fc67); route: no writer trigger, one coherent UI change; evidence: RED missing `COLORS['accent']` and responsive overview → GREEN focused 65 tests, full suite 195 OK, offscreen screenshots inspected at 1190×780 and 1010×600; Risk: none (presentation and discoverability only)
 
 ## Log
 - L1 (2026-11-17): "el conversar con la ia debe salir en la seccion de la misma aplicacion no que abra una ventana nueva, como si fuera perte de la apps" + placement answer "En la misma sección (Recommended)".
