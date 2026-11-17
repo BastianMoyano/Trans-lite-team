@@ -486,6 +486,93 @@ class MinutesUiTests(unittest.TestCase):
                 window.close()
 
 
+class ChatUiTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.application = QApplication.instance() or QApplication([])
+
+    _meeting_with_transcript = MinutesUiTests._meeting_with_transcript
+    _open = MinutesUiTests._open
+    _click_card = staticmethod(lambda page, label: LibraryUiTests._click_card(page, label))
+
+    def test_meeting_chat_opens_the_selected_cli_over_that_meeting(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch('teams_lite.app.launch_chat') as launch:
+            meeting_id, _ = self._meeting_with_transcript(d, minutes='# Minuta\nMigrar antes del 30\n')
+            window = self._open(d, minutes_cli='codex')
+            try:
+                self.assertTrue(window.chat_button.isEnabled())
+                window.chat_button.click()
+
+                workspace, cli = launch.call_args.args
+                self.assertEqual('codex', cli)
+                self.assertEqual(Path(workspace), Path(d).resolve() / '.chat' / f'meeting-{meeting_id}')
+                copied = Path(workspace) / 'meetings' / meeting_id / 'minutes.md'
+                self.assertIn('Migrar antes del 30', copied.read_text(encoding='utf-8'))
+                self.assertIn('Codex', window.status_label.text())
+            finally:
+                window.close()
+
+    def test_meeting_chat_is_disabled_without_minutes(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._meeting_with_transcript(d)
+            window = self._open(d)
+            try:
+                self.assertFalse(window.chat_button.isEnabled())
+            finally:
+                window.close()
+
+    def test_project_chat_is_offered_inside_a_project_and_reads_its_minutes(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch('teams_lite.app.launch_chat') as launch:
+            storage = Storage(d)
+            zenith = storage.create_organization('Zenith')
+            crm = storage.create_project(zenith, 'CRM')
+            with_minutes = storage.create_meeting('Kickoff', organization_id=zenith, project_id=crm)
+            storage.create_meeting('Daily', organization_id=zenith, project_id=crm)
+            other = storage.create_meeting('Suelta')
+            for meeting_id in (with_minutes, other):
+                (Path(d) / meeting_id / 'minutes.md').write_text('# Minuta\n', encoding='utf-8')
+            window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False))
+            window.timer.stop()
+            try:
+                page = window.preview_page
+                window.side_nav.setCurrentRow(1)
+                self.assertTrue(page.chat_button.isHidden())
+                self._click_card(page, 'Zenith')
+                self.assertTrue(page.chat_button.isHidden())
+                self._click_card(page, 'CRM')
+                self.assertFalse(page.chat_button.isHidden())
+                self.assertEqual([a.text() for a in page.chat_button.menu().actions()], ['Claude', 'Codex'])
+
+                page.chat_button.menu().actions()[0].trigger()
+
+                workspace, cli = launch.call_args.args
+                self.assertEqual('claude', cli)
+                self.assertEqual(Path(workspace).parent, Path(d).resolve() / '.chat')
+                self.assertEqual([p.name for p in (Path(workspace) / 'meetings').iterdir()], [with_minutes])
+                self.assertIn('Zenith › CRM', (Path(workspace) / 'CLAUDE.md').read_text(encoding='utf-8'))
+            finally:
+                window.close()
+
+    def test_project_chat_without_minutes_explains_why_and_launches_nothing(self):
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch('teams_lite.app.launch_chat') as launch, \
+             mock.patch('teams_lite.app.QMessageBox.warning') as modal:
+            storage = Storage(d)
+            storage.create_meeting('Suelta')
+            window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False))
+            window.timer.stop()
+            try:
+                page = window.preview_page
+                self._click_card(page, 'Cofre de reuniones')
+                page.chat_button.menu().actions()[1].trigger()
+
+                launch.assert_not_called()
+                self.assertIn('No hay minutas', window.status_label.text())
+                modal.assert_called_once()
+            finally:
+                window.close()
+
+
 class UiPerformanceTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

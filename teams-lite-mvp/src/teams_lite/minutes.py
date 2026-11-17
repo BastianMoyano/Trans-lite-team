@@ -16,6 +16,7 @@ import tempfile
 
 MINUTES_FILE = "minutes.md"
 SUPPORTED_CLIS = ("claude", "codex")
+CLI_LABELS = {"claude": "Claude", "codex": "Codex"}
 DEFAULT_TIMEOUT_SECONDS = 600
 
 MINUTES_PROMPT = """Redacta la minuta de la reunión cuya transcripción aparece al final, entre etiquetas <transcripcion>.

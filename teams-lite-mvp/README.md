@@ -143,6 +143,15 @@ While recording, "Marcar momento" (with an optional note) or the global hotkey *
 - Codex runs as `codex exec --sandbox read-only --skip-git-repo-check --ephemeral -o <file> -`. Read-only still allows reading files, so Claude is the default.
 - Both run in an empty temporary folder. A run that exceeds 10 minutes is cancelled and its whole process tree is killed; previous minutes are kept on any failure.
 
+### Chat about the minutes
+
+"Conversar con IA" opens an interactive Claude Code or Codex session in a new terminal window to ask about what was said or decided:
+
+- **One meeting**: the button next to "Generar minuta" (enabled once the meeting has minutes) uses the CLI chosen in the selector.
+- **A project**: in Vista previa, open a project (or the Cofre de reuniones / Sin proyecto) and choose Claude or Codex from the "Conversar con IA" menu. Only meetings that already have minutes are included.
+
+Each time, the app rebuilds `data/.chat/<scope>/` with copies of each meeting's `minutes.md` and `transcript.txt`, an `INDEX.md` (title, date, folder) and the same instructions as `CLAUDE.md` and `AGENTS.md`. The terminal opens there: Windows Terminal (`wt -d <folder>`) when installed, otherwise a new console. Claude runs as `claude --tools Read,Grep,Glob` (read-only, no shell or web) and Codex as `codex --sandbox read-only`; the real meeting folders are never exposed. As with minutes, meeting content is sent to Anthropic or OpenAI, and no meeting text is passed on the command line.
+
 ## Run
 
 ```powershell

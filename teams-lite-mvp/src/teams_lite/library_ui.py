@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .minutes import CLI_LABELS
 from .previews import meeting_thumbnail
 from .storage import ANY, Storage
 
@@ -76,6 +77,7 @@ class PreviewPage(QWidget):
     move_meeting = Signal(str)
     export_meeting = Signal(str)
     import_requested = Signal()
+    chat_requested = Signal(str)  # CLI to chat with about the meetings in view
 
     def __init__(
         self,
@@ -105,6 +107,16 @@ class PreviewPage(QWidget):
         self.breadcrumb_bar.setSpacing(4)
         header.addLayout(self.breadcrumb_bar)
         header.addStretch(1)
+        self.chat_button = QPushButton("Conversar con IA")
+        self.chat_button.setObjectName("ghostButton")
+        self.chat_button.setToolTip(
+            "Abre una terminal con la CLI elegida para preguntar sobre las minutas de estas reuniones"
+        )
+        chat_menu = QMenu(self.chat_button)
+        for cli, label in CLI_LABELS.items():
+            chat_menu.addAction(label, lambda cli=cli: self.chat_requested.emit(cli))
+        self.chat_button.setMenu(chat_menu)
+        header.addWidget(self.chat_button)
         self.move_button = QPushButton("Mover a…")
         self.move_button.setObjectName("ghostButton")
         self.move_button.setEnabled(False)
@@ -164,6 +176,24 @@ class PreviewPage(QWidget):
     def breadcrumb_labels(self) -> list[str]:
         return ["Organizaciones"] + [label for _, _, label in self._path]
 
+    def visible_meetings(self) -> list[dict] | None:
+        """The meetings of the vault or project being browsed, or None while choosing one."""
+        if not self._path:
+            return None
+        if self._path[0][0] == "vault":
+            return self.store.list_meetings(organization_id=None)
+        if len(self._path) == 1:
+            return None
+        return self.store.list_meetings(organization_id=self._path[0][1], project_id=self._path[1][1])
+
+    def chat_scope(self) -> tuple[str, str]:
+        """A stable key and a readable title for the meetings in view."""
+        placement = self.current_placement()
+        if placement is None or self._path[0][0] == "vault":
+            return "vault", VAULT_LABEL
+        organization_id, project_id = placement
+        return f"project-{organization_id}-{project_id or 'none'}", " › ".join(label for _, _, label in self._path)
+
     def go_to_level(self, depth: int) -> None:
         self._path = self._path[:depth]
         self.refresh()
@@ -177,14 +207,13 @@ class PreviewPage(QWidget):
     def refresh(self) -> None:
         self._drop_missing_levels()
         self._render_breadcrumb()
-        if not self._path:
+        meetings = self.visible_meetings()
+        if meetings is not None:
+            self._show_meetings(meetings)
+        elif not self._path:
             self._show_organizations()
-        elif self._path[0][0] == "vault":
-            self._show_meetings(self.store.list_meetings(organization_id=None))
-        elif len(self._path) == 1:
-            self._show_projects(self._path[0][1])
         else:
-            self._show_meetings(self.store.list_meetings(organization_id=self._path[0][1], project_id=self._path[1][1]))
+            self._show_projects(self._path[0][1])
 
     def _drop_missing_levels(self) -> None:
         """An organization or project deleted or renamed elsewhere must not leave a stale view."""
@@ -250,6 +279,7 @@ class PreviewPage(QWidget):
                        ("organization", organization["id"], organization["name"]))
         self.stack.setCurrentWidget(self.grid)
         self.move_button.hide()
+        self.chat_button.hide()
 
     def _show_projects(self, organization_id: str) -> None:
         self.grid.clear()
@@ -261,6 +291,7 @@ class PreviewPage(QWidget):
         self._card(NO_PROJECT_LABEL, len(loose), loose, ("project", None, NO_PROJECT_LABEL))
         self.stack.setCurrentWidget(self.grid)
         self.move_button.hide()
+        self.chat_button.hide()
 
     def _show_meetings(self, meetings: list[dict]) -> None:
         selected = self.selected_meeting_id()
@@ -284,6 +315,8 @@ class PreviewPage(QWidget):
             self.stack.setCurrentWidget(self.empty_label)
         self.move_button.show()
         self.move_button.setEnabled(self.selected_meeting_id() is not None)
+        self.chat_button.show()
+        self.chat_button.setEnabled(bool(meetings))
 
     def _enter(self, item: QListWidgetItem) -> None:
         target = item.data(Qt.ItemDataRole.UserRole)

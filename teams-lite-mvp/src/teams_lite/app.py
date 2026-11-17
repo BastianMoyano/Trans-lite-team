@@ -71,7 +71,8 @@ from .library_ui import (
     PlacementPicker,
     PreviewPage,
 )
-from .minutes import MinutesError, generate_minutes, load_minutes
+from .chat import ChatError, build_workspace, launch_chat
+from .minutes import CLI_LABELS, MinutesError, generate_minutes, load_minutes
 from .moments import capture_moment, format_offset, load_moments, moments_for_minutes
 from .ocr import load_participants, merge_participants, read_teams_names
 from .sharing import PackageError, export_meeting, import_meeting, read_package, suggest_placement
@@ -472,7 +473,7 @@ table { border-collapse: collapse; margin: 6px 0; }
 th { background: #232323; color: #EDEDED; padding: 6px 10px; border: 1px solid #3A3A3A; }
 td { color: #D4D4D4; padding: 6px 10px; border: 1px solid #2E2E2E; }
 """
-_CLI_LABELS = {"claude": "Claude", "codex": "Codex"}
+_CLI_LABELS = CLI_LABELS
 
 _SVG_TEMPLATE = (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="{fill}" stroke="{stroke}" '
@@ -957,6 +958,7 @@ class MainWindow(QMainWindow):
         self.copy_button.clicked.connect(self.copy_transcript)
         self.download_button.clicked.connect(self.download_transcript)
         self.generate_minutes_button.clicked.connect(self.generate_minutes_for_selected)
+        self.chat_button.clicked.connect(self.chat_about_selected_meeting)
         self.mark_moment_button.clicked.connect(lambda: self.mark_moment())
         self.moment_note_input.returnPressed.connect(lambda: self.mark_moment())
         self.transcript_table.cellDoubleClicked.connect(self._open_moment_image)
@@ -983,6 +985,7 @@ class MainWindow(QMainWindow):
         page.move_meeting.connect(self.move_meeting)
         page.export_meeting.connect(self.export_meeting)
         page.import_requested.connect(self.import_meeting_package)
+        page.chat_requested.connect(self.chat_about_preview)
         return page
 
     def _build_admin_page(self) -> QWidget:
@@ -1392,7 +1395,7 @@ class MainWindow(QMainWindow):
         self.view_transcript_button.setChecked(True)
         toolbar.addStretch(1)
         self.minutes_cli_combo = QComboBox()
-        self.minutes_cli_combo.setAccessibleName("CLI para generar la minuta")
+        self.minutes_cli_combo.setAccessibleName("CLI para la minuta y el chat")
         for cli, label in _CLI_LABELS.items():
             self.minutes_cli_combo.addItem(label, cli)
         self.minutes_cli_combo.setCurrentIndex(max(0, self.minutes_cli_combo.findData(self.config.minutes_cli)))
@@ -1402,8 +1405,14 @@ class MainWindow(QMainWindow):
             "Envía la transcripción a la CLI elegida (sin herramientas ni acceso a archivos) "
             "y guarda la respuesta en minutes.md."
         )
+        self.chat_button = QPushButton("Conversar con IA")
+        self.chat_button.setObjectName("ghostButton")
+        self.chat_button.setToolTip(
+            "Abre una terminal con la CLI elegida para preguntar sobre la minuta y la transcripción de esta reunión."
+        )
         toolbar.addWidget(self.minutes_cli_combo)
         toolbar.addWidget(self.generate_minutes_button)
+        toolbar.addWidget(self.chat_button)
         layout.addLayout(toolbar)
         layout.addWidget(_divider())
 
@@ -1916,6 +1925,7 @@ class MainWindow(QMainWindow):
         generating = meeting_id is not None and meeting_id in self._minutes_jobs
         can_generate = meeting_id is not None and bool(self._transcript_raw) and not generating
         self.generate_minutes_button.setEnabled(can_generate)
+        self.chat_button.setEnabled(meeting_id is not None and bool(self._minutes))
         self.minutes_cli_combo.setEnabled(not generating)
         if generating:
             self.generate_minutes_button.setText("Generando…")
@@ -1950,6 +1960,32 @@ class MainWindow(QMainWindow):
                 self.signals.minutes_failed.emit(meeting_id, f"No se pudo generar la minuta: {exc}")
 
         threading.Thread(target=work, name="meeting-minutes", daemon=True).start()
+
+    def chat_about_selected_meeting(self) -> None:
+        meeting_id = self._selected_meeting_id()
+        meeting = self.store.get_meeting(meeting_id) if meeting_id is not None else None
+        if meeting is None:
+            return
+        self.open_chat([meeting], f"meeting-{meeting_id}", meeting["title"], str(self.minutes_cli_combo.currentData()))
+
+    def chat_about_preview(self, cli: str) -> None:
+        meetings = self.preview_page.visible_meetings()
+        if meetings is None:
+            return
+        scope_key, title = self.preview_page.chat_scope()
+        self.open_chat(meetings, scope_key, title, cli)
+
+    def open_chat(self, meetings: list[dict], scope_key: str, title: str, cli: str) -> None:
+        """Copy the minutes in scope to data/.chat/ and open the CLI on them in a terminal window."""
+        try:
+            workspace = build_workspace(self.store.root, meetings, scope_key=scope_key, title=title)
+            launch_chat(workspace, cli)
+        except (ChatError, OSError) as exc:
+            message = str(exc) if isinstance(exc, ChatError) else f"No se pudo preparar el chat: {exc}"
+            self._set_status(message, tone="error")
+            QMessageBox.warning(self, "Teams Lite", message)
+            return
+        self._set_status(f"Chat con {_CLI_LABELS.get(cli, cli)} abierto en una terminal · {title}", tone="success")
 
     def _minutes_done(self, meeting_id: str) -> None:
         self._minutes_jobs.discard(meeting_id)
