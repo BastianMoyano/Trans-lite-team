@@ -62,7 +62,7 @@ from .hotkey import (
     register_moment_hotkey,
     unregister_moment_hotkey,
 )
-from .library_ui import PlacementPicker
+from .library_ui import THUMBNAIL_SIZE, PlacementPicker, PreviewPage
 from .minutes import MinutesError, generate_minutes, load_minutes
 from .moments import capture_moment, format_offset, load_moments, moments_for_minutes
 from .ocr import load_participants, merge_participants, read_teams_names
@@ -312,6 +312,50 @@ QListWidget#sideNav::item:selected {
 }
 QListWidget#sideNav::item:hover:!selected {
     background: #1A1A1A;
+}
+QListWidget#previewGrid, QListWidget#previewMeetings, QListWidget#adminList {
+    background: transparent;
+    border: none;
+    color: #EDEDED;
+    font-size: 13px;
+    outline: none;
+}
+QListWidget#previewGrid::item {
+    padding: 10px;
+    border: 1px solid #2E2E2E;
+    border-radius: 10px;
+    background: #1A1A1A;
+}
+QListWidget#previewGrid::item:hover {
+    background: #232323;
+    border-color: #3A3A3A;
+}
+QListWidget#previewMeetings::item, QListWidget#adminList::item {
+    padding: 6px 8px;
+    border-radius: 8px;
+}
+QListWidget#previewMeetings::item:selected, QListWidget#adminList::item:selected {
+    background: #232323;
+    color: #EDEDED;
+}
+QListWidget#previewMeetings::item:hover:!selected, QListWidget#adminList::item:hover:!selected {
+    background: #1F1F1F;
+}
+QPushButton#crumb {
+    min-height: 28px;
+    padding: 0 6px;
+    border: none;
+    background: transparent;
+    color: #8F8F8F;
+    font-size: 13px;
+}
+QPushButton#crumb:hover {
+    color: #EDEDED;
+}
+QPushButton#crumb:disabled {
+    color: #EDEDED;
+    background: transparent;
+    font-weight: 600;
 }
 QLabel#emptyState {
     color: #6B6B6B;
@@ -889,14 +933,44 @@ class MainWindow(QMainWindow):
         self.view_minutes_button.clicked.connect(lambda: self._set_view("minutes"))
 
     def _build_preview_page(self) -> QWidget:
-        return QWidget()
+        placeholder = QPixmap(THUMBNAIL_SIZE)
+        placeholder.fill(QColor(COLORS["surface_raised"]))
+        painter = QPainter(placeholder)
+        icon = _render_svg("image", COLORS["text_subtle"], 28)
+        painter.drawPixmap((placeholder.width() - icon.width()) // 2, (placeholder.height() - icon.height()) // 2, icon)
+        painter.end()
+        page = PreviewPage(
+            self.store,
+            folder_icon=_render_svg("folder", COLORS["text_muted"], 72),
+            placeholder=placeholder,
+            describe=lambda meeting: (
+                f"{format_meeting_date(meeting['started_utc'])} · "
+                f"{_STATUS_LABELS.get(str(meeting['status']), str(meeting['status']))}"
+            ),
+        )
+        page.open_meeting.connect(self.open_meeting)
+        return page
+
+    def open_meeting(self, meeting_id: str) -> None:
+        """Shows a meeting picked in another section on the Teams Lite page."""
+        self.side_nav.setCurrentRow(0)
+        self._refresh()
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            if item is not None and item.data(Qt.ItemDataRole.UserRole) == meeting_id:
+                self.table.selectRow(row)
+                self.table.scrollToItem(item)
+                return
 
     def _build_admin_page(self) -> QWidget:
         return QWidget()
 
     def _show_section(self, row: int) -> None:
-        if row >= 0:
-            self.pages.setCurrentIndex(row)
+        if row < 0:
+            return
+        self.pages.setCurrentIndex(row)
+        if self.pages.currentWidget() is self.preview_page:
+            self.preview_page.refresh()  # screenshots may have been added since the last visit
 
     def _build_header(self) -> QHBoxLayout:
         header = QHBoxLayout()
@@ -1551,11 +1625,15 @@ class MainWindow(QMainWindow):
         self._show_new_audio_warnings()
         meetings = self.store.list_meetings()
         signature = tuple(
-            (meeting["id"], meeting["title"], meeting["status"], meeting["started_utc"]) for meeting in meetings
+            (meeting["id"], meeting["title"], meeting["status"], meeting["started_utc"],
+             meeting["organization_id"], meeting["project_id"])
+            for meeting in meetings
         )
         if signature == self._meetings_signature:
             return
         self._meetings_signature = signature
+        if self.pages.currentWidget() is self.preview_page:
+            self.preview_page.refresh()
         selected_id = self._selected_meeting_id()
         self.table.blockSignals(True)
         self.table.clearSelection()

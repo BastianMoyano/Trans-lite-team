@@ -12,7 +12,7 @@ Branch: feat/meeting-library · Delivery: ask-on-risk · Test runner: `.venv\Scr
 ## Tasks
 - T1 [S2,S4,S5] inline — storage: organizations/projects tables, additive meetings columns, CRUD, move, filtered list — Risk: item 1 (persisted schema) — done, RED 9 errors → GREEN 17/17, suite 142 OK
 - T2 [S1,S4] inline — side navigation + organization/project picker on recording — done, RED 3 → GREEN 3, test_app 33 OK
-- T3 [S3] inline — previews module + Vista previa page — pending
+- T3 [S3] inline — previews module + Vista previa page — done, RED import errors → GREEN 3 previews + 3 UI, test_app 36 OK
 - T4 [S2,S5] inline — Administrar page + Mover a… dialog — pending
 - T5 [S1-S5] inline — README — pending
 

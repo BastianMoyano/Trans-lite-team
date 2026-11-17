@@ -13,6 +13,7 @@ from PySide6.QtWidgets import QApplication
 
 from teams_lite.app import _MEETING_ROLE, MainWindow
 from teams_lite.config import AppConfig
+from teams_lite.library_ui import THUMBNAIL_ROLE
 from teams_lite.moments import load_moments
 from teams_lite.ocr import load_participants, merge_participants
 from teams_lite.storage import Storage
@@ -1003,6 +1004,109 @@ class LibraryUiTests(unittest.TestCase):
                 self.assertEqual((meeting['organization_id'], meeting['project_id']), (zenith, crm))
                 window.stop_recording()
                 self._wait_until_stopped(window)
+            finally:
+                window.close()
+
+    @staticmethod
+    def _add_moment_screenshot(meeting_dir):
+        from PIL import Image
+        (meeting_dir / 'moments').mkdir(parents=True, exist_ok=True)
+        Image.new('RGB', (320, 180), (40, 90, 160)).save(meeting_dir / 'moments' / 'teams-1.jpg')
+        (meeting_dir / 'moments.jsonl').write_text(
+            '{"offset_seconds": 3.0, "image": "moments/teams-1.jpg"}\n', encoding='utf-8')
+
+    @staticmethod
+    def _grid_texts(page):
+        return [page.grid.item(row).text().split('\n')[0] for row in range(page.grid.count())]
+
+    @staticmethod
+    def _click_card(page, label):
+        item = next(page.grid.item(row) for row in range(page.grid.count())
+                    if page.grid.item(row).text().split('\n')[0] == label)
+        page.grid.itemClicked.emit(item)
+
+    def test_preview_drills_from_organizations_to_projects_to_meetings_newest_first(self):
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            zenith = storage.create_organization('Zenith')
+            crm = storage.create_project(zenith, 'CRM')
+            storage.create_project(zenith, 'Web')
+            times = iter(['2026-11-01T10:00:00+00:00', '2026-11-03T10:00:00+00:00', '2026-11-02T10:00:00+00:00'])
+            with mock.patch('teams_lite.storage.utc_now', side_effect=lambda: next(times)):
+                oldest = storage.create_meeting('Kickoff', organization_id=zenith, project_id=crm)
+                newest = storage.create_meeting('Demo', organization_id=zenith, project_id=crm)
+                storage.create_meeting('Suelta')
+            for meeting in (oldest, newest):
+                storage.finish_meeting(meeting)
+            self._add_moment_screenshot(Path(d) / newest)
+            window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False))
+            window.timer.stop()
+            try:
+                page = window.preview_page
+                window.side_nav.setCurrentRow(1)
+                self.assertEqual(self._grid_texts(page), ['Cofre de reuniones', 'Zenith'])
+                self.assertIn('2 reuniones', page.grid.item(1).text())
+                self.assertEqual(page.breadcrumb_labels(), ['Organizaciones'])
+
+                self._click_card(page, 'Zenith')
+                self.assertEqual(self._grid_texts(page), ['CRM', 'Web', 'Sin proyecto'])
+                self.assertEqual(page.breadcrumb_labels(), ['Organizaciones', 'Zenith'])
+
+                self._click_card(page, 'CRM')
+                self.assertEqual(page.breadcrumb_labels(), ['Organizaciones', 'Zenith', 'CRM'])
+                self.assertIs(page.stack.currentWidget(), page.meeting_list)
+                rows = [page.meeting_list.item(row) for row in range(page.meeting_list.count())]
+                self.assertEqual([item.data(Qt.ItemDataRole.UserRole) for item in rows], [newest, oldest])
+                self.assertTrue(rows[0].text().startswith('Demo\n'))
+                self.assertEqual(rows[0].data(THUMBNAIL_ROLE), str(storage.root / newest / 'moments' / 'teams-1.jpg'))
+                self.assertIsNone(rows[1].data(THUMBNAIL_ROLE))
+                self.assertFalse(rows[0].icon().isNull())
+
+                page.go_to_level(0)
+                self.assertEqual(self._grid_texts(page), ['Cofre de reuniones', 'Zenith'])
+            finally:
+                window.close()
+
+    def test_vault_card_lists_unfiled_meetings_directly(self):
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            storage.create_organization('Zenith')
+            loose = storage.create_meeting('Suelta')
+            window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False))
+            window.timer.stop()
+            try:
+                page = window.preview_page
+                self._click_card(page, 'Cofre de reuniones')
+                self.assertEqual(page.breadcrumb_labels(), ['Organizaciones', 'Cofre de reuniones'])
+                self.assertEqual(
+                    [page.meeting_list.item(row).data(Qt.ItemDataRole.UserRole)
+                     for row in range(page.meeting_list.count())],
+                    [loose],
+                )
+            finally:
+                window.close()
+
+    def test_opening_a_meeting_from_preview_shows_it_in_teams_lite(self):
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            first = storage.create_meeting('Primera')
+            storage.finish_meeting(first)
+            second = storage.create_meeting('Segunda')
+            storage.finish_meeting(second)
+            window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False))
+            window.timer.stop()
+            try:
+                page = window.preview_page
+                window.side_nav.setCurrentRow(1)
+                self._click_card(page, 'Cofre de reuniones')
+                item = next(page.meeting_list.item(row) for row in range(page.meeting_list.count())
+                            if page.meeting_list.item(row).data(Qt.ItemDataRole.UserRole) == first)
+                page.meeting_list.itemActivated.emit(item)
+                self.application.processEvents()
+
+                self.assertIs(window.pages.currentWidget(), window.recording_page)
+                self.assertEqual(window.side_nav.currentRow(), 0)
+                self.assertEqual(window._selected_meeting_id(), first)
             finally:
                 window.close()
 
