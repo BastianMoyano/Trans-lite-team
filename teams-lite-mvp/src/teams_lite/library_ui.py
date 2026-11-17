@@ -75,6 +75,7 @@ class PreviewPage(QWidget):
     """Browses organizations, then projects, then their meetings newest first with a screenshot."""
 
     open_meeting = Signal(str)
+    rename_meeting = Signal(str)
     move_meeting = Signal(str)
     export_meeting = Signal(str)
     import_requested = Signal()
@@ -351,6 +352,7 @@ class PreviewPage(QWidget):
         meeting_id = str(item.data(Qt.ItemDataRole.UserRole))
         menu = QMenu(self)
         menu.addAction("Abrir", lambda: self.open_meeting.emit(meeting_id))
+        menu.addAction("Renombrar…", lambda: self.rename_meeting.emit(meeting_id))
         menu.addAction("Mover a…", lambda: self.move_meeting.emit(meeting_id))
         menu.addAction("Exportar…", lambda: self.export_meeting.emit(meeting_id))
         menu.exec(self.meeting_list.viewport().mapToGlobal(position))

@@ -244,6 +244,13 @@ class Storage:
             db.close()
         return meeting_id
 
+    def rename_meeting(self, meeting_id, title):
+        """Changes only the title; the meeting folder keeps its original name."""
+        title = _clean_name(title)
+        with self._connect() as db:
+            if db.execute('UPDATE meetings SET title=? WHERE id=?', (title, meeting_id)).rowcount == 0:
+                raise ValueError('Reunión desconocida')
+
     def move_meeting(self, meeting_id, organization_id, project_id):
         """Files a meeting elsewhere; only metadata changes, its folder stays where it is."""
         with self._connect() as db:

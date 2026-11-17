@@ -1428,6 +1428,47 @@ class LibraryUiTests(unittest.TestCase):
                 window.close()
 
 
+class RenameMeetingUiTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.application = QApplication.instance() or QApplication([])
+
+    def test_rename_from_grabar_and_from_biblioteca(self):
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            meeting = storage.create_meeting('Reunión de Teams')
+            storage.finish_meeting(meeting)
+            window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False))
+            window.timer.stop()
+            window._show_error = mock.Mock()
+            try:
+                self.assertFalse(window.rename_button.isEnabled())
+                window.open_meeting(meeting)
+                self.assertTrue(window.rename_button.isEnabled())
+                asked = []
+                window._ask_meeting_title = lambda current: asked.append(current) or 'Kickoff CRM'
+                window.rename_button.click()
+
+                self.assertEqual(asked, ['Reunión de Teams'])
+                self.assertEqual(storage.get_meeting(meeting)['title'], 'Kickoff CRM')
+                self.assertEqual(window.table.item(window.table.currentRow(), 1).text(), 'Kickoff CRM')
+                self.assertEqual(window._selected_meeting_id(), meeting)
+                self.assertEqual(window.status_label.text(), 'Reunión renombrada.')
+
+                window._ask_meeting_title = lambda current: None  # cancelled
+                window.rename_button.click()
+                window._ask_meeting_title = lambda current: '   '  # rejected by storage
+                window.rename_button.click()
+                self.assertEqual(storage.get_meeting(meeting)['title'], 'Kickoff CRM')
+                window._show_error.assert_called_once()
+
+                window._ask_meeting_title = lambda current: 'Demo final'
+                window.preview_page.rename_meeting.emit(meeting)
+                self.assertEqual(storage.get_meeting(meeting)['title'], 'Demo final')
+            finally:
+                window.close()
+
+
 class SharingUiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

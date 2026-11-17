@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
     QHeaderView,
+    QInputDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -545,6 +546,7 @@ _ICON_PATHS = {
         '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/>'
         '<path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/>'
     ),
+    "pencil": '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
     "folder": (
         '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4'
         'a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>'
@@ -1023,6 +1025,7 @@ class MainWindow(QMainWindow):
         self.ocr_checkbox.toggled.connect(self._sync_ocr_button)
         self.table.itemSelectionChanged.connect(self.show_selected_transcript)
         self.delete_button.clicked.connect(self.delete_selected_meeting)
+        self.rename_button.clicked.connect(lambda: self.rename_meeting())
         self.move_button.clicked.connect(lambda: self.move_meeting())
         self.export_button.clicked.connect(lambda: self.export_meeting())
         self.copy_button.clicked.connect(self.copy_transcript)
@@ -1064,6 +1067,7 @@ class MainWindow(QMainWindow):
             default_cli=self.config.minutes_cli,
         )
         page.open_meeting.connect(self.open_meeting)
+        page.rename_meeting.connect(self.rename_meeting)
         page.move_meeting.connect(self.move_meeting)
         page.export_meeting.connect(self.export_meeting)
         page.import_requested.connect(self.import_meeting_package)
@@ -1078,6 +1082,28 @@ class MainWindow(QMainWindow):
         self.placement_picker.reload()
         self.preview_page.refresh()
         self._refresh()
+
+    def _ask_meeting_title(self, current: str) -> str | None:
+        title, accepted = QInputDialog.getText(self, "Renombrar reunión", "Nuevo nombre de la reunión:", text=current)
+        return title if accepted else None
+
+    def rename_meeting(self, meeting_id: str | None = None) -> None:
+        """Changes the meeting title; its folder on disk keeps its name."""
+        meeting = self.store.get_meeting(meeting_id or self._selected_meeting_id() or "")
+        if meeting is None:
+            return
+        title = self._ask_meeting_title(meeting["title"])
+        if title is None:
+            return
+        try:
+            self.store.rename_meeting(meeting["id"], title)
+        except ValueError as exc:
+            self._show_error(f"No se pudo renombrar la reunión: {exc}")
+            return
+        self.preview_page.refresh()
+        self._refresh()
+        self._sync_chat_scope()
+        self._set_status("Reunión renombrada.", tone="success")
 
     def _choose_placement(self, meeting: dict) -> tuple[str | None, str | None] | None:
         dialog = MoveMeetingDialog(self.store, meeting["organization_id"], meeting["project_id"], self)
@@ -1442,9 +1468,11 @@ class MainWindow(QMainWindow):
         self.download_button = QPushButton("Descargar")
         self.download_button.setObjectName("ghostButton")
         set_button_icon(self.download_button, "download", COLORS["text_soft"], gap=6)
+        self.rename_button = QPushButton("Renombrar")
         self.move_button = QPushButton("Mover")
         self.export_button = QPushButton("Exportar")
         for button, icon, label, tip in (
+            (self.rename_button, "pencil", "Renombrar…", "Cambiar el nombre de la reunión"),
             (self.move_button, "folder", "Mover a…", "Mover a otra organización o proyecto"),
             (self.export_button, "share", "Exportar…", "Exportar la reunión en un paquete .zip para compartirla"),
         ):
@@ -1455,10 +1483,11 @@ class MainWindow(QMainWindow):
         self.delete_button = QPushButton("Eliminar reunión")
         self.delete_button.setObjectName("deleteButton")
         set_button_icon(self.delete_button, "trash", COLORS["danger"], gap=6)
-        for button in (self.copy_button, self.download_button, self.move_button, self.export_button,
-                       self.delete_button):
+        for button in (self.copy_button, self.download_button, self.rename_button, self.move_button,
+                       self.export_button, self.delete_button):
             button.setEnabled(False)
-        for button in (self.copy_button, self.download_button, self.move_button, self.export_button):
+        for button in (self.copy_button, self.download_button, self.rename_button, self.move_button,
+                       self.export_button):
             actions.addWidget(button)
         actions.addStretch(1)
         actions.addWidget(self.delete_button)
@@ -1944,6 +1973,7 @@ class MainWindow(QMainWindow):
     def show_selected_transcript(self) -> None:
         meeting_id = self._selected_meeting_id()
         self.delete_button.setEnabled(meeting_id is not None)
+        self.rename_button.setEnabled(meeting_id is not None)
         self.move_button.setEnabled(meeting_id is not None)
         self.export_button.setEnabled(meeting_id is not None)
         self._show_attendees(meeting_id)
@@ -2268,6 +2298,7 @@ class MainWindow(QMainWindow):
             return
         self.table.clearSelection()
         self.delete_button.setEnabled(False)
+        self.rename_button.setEnabled(False)
         self.move_button.setEnabled(False)
         self.export_button.setEnabled(False)
         self.transcript_meta.clear()
