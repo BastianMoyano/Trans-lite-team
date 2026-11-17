@@ -61,6 +61,8 @@ class _Connection(sqlite3.Connection):
             self.close()
 
 
+_IMPORTABLE_STATUSES = {'completed', 'interrupted', 'failed'}
+
 ANY = object()
 """Filter value for Storage.list_meetings meaning 'do not filter on this column'."""
 
@@ -135,16 +137,25 @@ class Storage:
         db.execute('PRAGMA foreign_keys=ON')
         return db
 
+    def _unique_meeting_id(self, db, base):
+        # Windows folder names are case-insensitive, so compare casefolded.
+        taken = {row['id'].casefold() for row in db.execute('SELECT id FROM meetings')}
+        taken.update(entry.name.casefold() for entry in self.root.iterdir())
+        meeting_id, copy = base, 2
+        while meeting_id.casefold() in taken:
+            meeting_id, copy = f'{base} ({copy})', copy + 1
+        return meeting_id
+
+    def get_meeting(self, meeting_id):
+        with self._connect() as db:
+            row = db.execute('SELECT * FROM meetings WHERE id=?', (meeting_id,)).fetchone()
+            return dict(row) if row is not None else None
+
     def create_meeting(self, title='Meeting', organization_id=None, project_id=None):
         base = meeting_folder_name(title, local_now())
         with self._connect() as db:
             _check_placement(db, organization_id, project_id)
-            # Windows folder names are case-insensitive, so compare casefolded.
-            taken = {row['id'].casefold() for row in db.execute('SELECT id FROM meetings')}
-            taken.update(entry.name.casefold() for entry in self.root.iterdir())
-            meeting_id, copy = base, 2
-            while meeting_id.casefold() in taken:
-                meeting_id, copy = f'{base} ({copy})', copy + 1
+            meeting_id = self._unique_meeting_id(db, base)
             db.execute(
                 'INSERT INTO meetings (id, title, started_utc, ended_utc, status, organization_id, project_id) '
                 'VALUES (?,?,?,?,?,?,?)',
@@ -172,6 +183,66 @@ class Storage:
         with self._connect() as db:
             return [dict(row) for row in db.execute(
                 f'SELECT * FROM meetings{where} ORDER BY started_utc DESC', params)]
+
+    def adopt_meeting(self, staging, meeting, *, organization_id=None, project_id=None,
+                      streams=(), segments=(), events=()):
+        """Records an imported meeting whose files were extracted to `staging`, all or nothing.
+
+        `staging` must be a folder directly under the data root; it becomes the meeting folder.
+        Streams and segments get fresh ids, so importing the same package twice never collides.
+        Each segment names its extracted WAV with `file`, relative to `staging`.
+        """
+        staging = Path(staging).resolve()
+        if staging.parent != self.root or not staging.is_dir():
+            raise ValueError('Carpeta de importación no válida')
+        started = datetime.fromisoformat(meeting['started_utc'])
+        moment = started.astimezone() if started.tzinfo else started
+        status = meeting['status'] if meeting['status'] in _IMPORTABLE_STATUSES else 'completed'
+        db = self._connect()
+        moved = False
+        try:
+            db.execute('BEGIN IMMEDIATE')
+            _check_placement(db, organization_id, project_id)
+            meeting_id = self._unique_meeting_id(db, meeting_folder_name(meeting['title'], moment))
+            final_dir = self.root / meeting_id
+            db.execute(
+                'INSERT INTO meetings (id, title, started_utc, ended_utc, status, organization_id, project_id) '
+                'VALUES (?,?,?,?,?,?,?)',
+                (meeting_id, meeting['title'], meeting['started_utc'], meeting['ended_utc'], status,
+                 organization_id, project_id))
+            stream_ids = {}
+            for stream in streams:
+                stream_ids[stream['id']] = (uuid.uuid4().hex, stream['kind'])
+                db.execute('INSERT INTO streams VALUES (?,?,?,?,?)',
+                           (stream_ids[stream['id']][0], meeting_id, stream['kind'],
+                            stream['sample_rate'], stream['channels']))
+            for segment in segments:
+                stream_id, kind = stream_ids[segment['stream_id']]
+                name = f"{kind}-{stream_id}-{segment['sequence']:06d}.wav"
+                os.replace(staging / segment['file'], staging / name)
+                final = final_dir / name
+                db.execute(
+                    'INSERT INTO segments (id, stream_id, sequence, started_monotonic, started_utc, ended_utc, '
+                    'path, temp_path, frames, status) VALUES (?,?,?,?,?,?,?,?,?,?)',
+                    (uuid.uuid4().hex, stream_id, segment['sequence'], segment['started_monotonic'],
+                     segment['started_utc'], segment['ended_utc'], str(final), str(final.with_suffix('.pcm.part')),
+                     segment['frames'], segment['status']))
+            for event in events:
+                db.execute('INSERT INTO events (meeting_id,timestamp_utc,monotonic,kind,detail) VALUES (?,?,?,?,?)',
+                           (meeting_id, event['timestamp_utc'], event['monotonic'], event['kind'], event['detail']))
+            db.execute('INSERT INTO events (meeting_id,timestamp_utc,monotonic,kind,detail) VALUES (?,?,?,?,?)',
+                       (meeting_id, utc_now(), time.monotonic(), 'imported', 'Importada desde un paquete'))
+            os.replace(staging, final_dir)
+            moved = True
+            db.commit()
+        except Exception:
+            db.rollback()
+            if moved and final_dir.exists() and not staging.exists():
+                os.replace(final_dir, staging)
+            raise
+        finally:
+            db.close()
+        return meeting_id
 
     def move_meeting(self, meeting_id, organization_id, project_id):
         """Files a meeting elsewhere; only metadata changes, its folder stays where it is."""
@@ -292,9 +363,11 @@ class Storage:
             _purge_directory(quarantine)
 
     def _purge_quarantine(self):
-        for leftover in self.root.glob('.delete-*'):
-            if leftover.is_dir():
-                _purge_directory(leftover, attempts=1)
+        # .delete-* holds deleted meetings, .import-* an import interrupted before it was recorded.
+        for pattern in ('.delete-*', '.import-*'):
+            for leftover in self.root.glob(pattern):
+                if leftover.is_dir():
+                    _purge_directory(leftover, attempts=1)
 
     def create_stream(self, meeting_id, kind, sample_rate, channels):
         stream_id = uuid.uuid4().hex
