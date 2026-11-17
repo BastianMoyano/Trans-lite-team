@@ -10,12 +10,15 @@ Branch: feat/meeting-library · Delivery: ask-on-risk · Test runner: `.venv\Scr
 - S5: "que tenga la posiblidad de mover la reus a los proyectos correspondientes o organizacion" — a "Mover a…" action moves a meeting to an organization (with or without project) or back to the Cofre. Assumption: moving changes metadata only; the folder on disk does not move.
 
 ## Tasks
-- T1 [S2,S4,S5] inline — storage: organizations/projects tables, additive meetings columns, CRUD, move, filtered list — Risk: item 1 (persisted schema) — done, RED 9 errors → GREEN 17/17, suite 142 OK
-- T2 [S1,S4] inline — side navigation + organization/project picker on recording — done, RED 3 → GREEN 3, test_app 33 OK
-- T3 [S3] inline — previews module + Vista previa page — done, RED import errors → GREEN 3 previews + 3 UI, test_app 36 OK
-- T4 [S2,S5] inline — Administrar page + Mover a… dialog — done, RED import error → GREEN 4 UI tests, suite 155 OK
-- T5 [S1-S5] inline — README — done (structural readback)
+- T1 [S2,S4,S5] inline — storage: organizations/projects tables, additive meetings columns, CRUD, move, filtered list — Risk: item 1 (persisted schema) — done (dfee9e8), RED 9 errors → GREEN 17/17, suite 142 OK
+- T2 [S1,S4] inline — side navigation + organization/project picker on recording — done (b6a5683), RED 3 → GREEN 3, test_app 33 OK
+- T3 [S3] inline — previews module + Vista previa page — done (5e1e17d), RED import errors → GREEN 3 previews + 3 UI, test_app 36 OK
+- T4 [S2,S5] inline — Administrar page + Mover a… dialog — done (f4e2b49), RED import error → GREEN 4 UI tests, suite 155 OK
+- T5 [S1-S5] inline — README — done (8f9909c, structural readback)
+- T6 [S1] inline — default window widened by the side menu width — done (549e4e3), suite 155 OK
 
 ## Log
 - L1 (2026-11-17): "hola necesito hacer unas mejoras en las runiones poder ordenarlos por organizacion y proyectos, tambien saber si tienes pantallazos las reuniones para tener un previsualizacion" + "quiero un menu al lado iz, que tenga  uno para administrar organizacion y proyectos, y otra seccion previsualizacion que salga organizacion entro y salga los proyectos cuando entre en proyecto salga las reuniones, ordenados por fecha, y que tenga previsualizacion de la screnshot, lo otro  la seccion de team lite ahi debe pedirme la organizacion y proyecto, si no seleccione que haga uno por defecto que diga cofre de reunion y que tenga la posiblidad de mover la reus a los proyectos correspondientes o organizacion"
 - L2: Plan approved. Baseline suite 133/133 OK on c26a3e4. Route: inline for all tasks (each unit depends on T1; no writer trigger). Note: create_meeting uses positional `INSERT INTO meetings VALUES (?,?,?,?,?)`, which breaks once columns are added; switch to named columns.
+- L3: Review assess on dfee9e8 (escalated item 1): risk high, review_due true. Independent verifier launched on T1; native review runs after it.
+- L4: Offscreen screenshots (no fonts on the offscreen platform, layout only) showed the Teams Lite page clipped on the right once the 190 px side menu was added → T6. One earlier `tests.test_app` run hung past 300 s while the T2 tests sat in the wrong class and the verifier ran concurrently; not reproduced in later runs (5-7 s).
