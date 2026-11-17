@@ -9,13 +9,17 @@ from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFrame,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QListView,
     QListWidget,
     QListWidgetItem,
     QMenu,
+    QMessageBox,
     QPushButton,
     QStackedWidget,
     QVBoxLayout,
@@ -275,7 +279,7 @@ class PreviewPage(QWidget):
         if meeting_id is not None:
             self.move_meeting.emit(meeting_id)
 
-    def _meeting_menu(self, position) -> None:
+    def _meeting_menu(self, position: QPoint) -> None:
         item = self.meeting_list.itemAt(position)
         if item is None:
             return
@@ -284,6 +288,226 @@ class PreviewPage(QWidget):
         menu.addAction("Abrir", lambda: self.open_meeting.emit(meeting_id))
         menu.addAction("Mover a…", lambda: self.move_meeting.emit(meeting_id))
         menu.exec(self.meeting_list.viewport().mapToGlobal(position))
+
+
+class MoveMeetingDialog(QDialog):
+    """Chooses where a meeting is filed: the vault, an organization, or one of its projects."""
+
+    def __init__(self, store: Storage, organization_id: str | None, project_id: str | None,
+                 parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Mover reunión")
+        self.setMinimumWidth(420)
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+        hint = QLabel("Elige dónde guardar la reunión. Sin organización queda en el Cofre de reuniones.")
+        hint.setObjectName("fieldHint")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        self.picker = PlacementPicker(store)
+        self.picker.set_placement(organization_id, project_id)
+        layout.addWidget(self.picker)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Mover")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Cancelar")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def placement(self) -> tuple[str | None, str | None]:
+        return self.picker.organization_id(), self.picker.project_id()
+
+
+_FAILED = object()
+
+
+class AdminPage(QWidget):
+    """Creates, renames and deletes organizations and their projects."""
+
+    changed = Signal()
+
+    def __init__(self, store: Storage, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.store = store
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(40, 28, 40, 28)
+        layout.setSpacing(14)
+        title = QLabel("Administrar")
+        title.setObjectName("pageTitle")
+        layout.addWidget(title)
+        hint = QLabel(
+            "Las reuniones sin organización quedan en el Cofre de reuniones. "
+            "Eliminar una organización o un proyecto nunca elimina sus reuniones."
+        )
+        hint.setObjectName("fieldHint")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        columns = QHBoxLayout()
+        columns.setSpacing(16)
+        organization_card, self.organization_list, organization_buttons = self._column("Organizaciones", "Nueva")
+        self.new_organization_button, self.rename_organization_button, self.delete_organization_button = (
+            organization_buttons
+        )
+        project_card, self.project_list, project_buttons = self._column("Proyectos", "Nuevo")
+        self.new_project_button, self.rename_project_button, self.delete_project_button = project_buttons
+        columns.addWidget(organization_card, 1)
+        columns.addWidget(project_card, 1)
+        layout.addLayout(columns, 1)
+
+        self.organization_list.itemSelectionChanged.connect(self._reload_projects)
+        self.project_list.itemSelectionChanged.connect(self._sync_buttons)
+        self.new_organization_button.clicked.connect(self._new_organization)
+        self.rename_organization_button.clicked.connect(self._rename_organization)
+        self.delete_organization_button.clicked.connect(self._delete_organization)
+        self.new_project_button.clicked.connect(self._new_project)
+        self.rename_project_button.clicked.connect(self._rename_project)
+        self.delete_project_button.clicked.connect(self._delete_project)
+        self.reload()
+
+    # Dialog hooks: plain methods so the flows can be exercised without modal windows.
+    def ask_name(self, title: str, label: str, current: str = "") -> str | None:
+        text, accepted = QInputDialog.getText(self, title, label, text=current)
+        return text if accepted else None
+
+    def confirm(self, title: str, text: str) -> bool:
+        return QMessageBox.question(self, title, text) == QMessageBox.StandardButton.Yes
+
+    def show_error(self, message: str) -> None:
+        QMessageBox.warning(self, "Administrar", message)
+
+    @staticmethod
+    def _column(heading: str, new_label: str):
+        card = QFrame()
+        card.setObjectName("card")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+        label = QLabel(heading)
+        label.setObjectName("sectionTitle")
+        layout.addWidget(label)
+        items = QListWidget()
+        items.setObjectName("adminList")
+        layout.addWidget(items, 1)
+        row = QHBoxLayout()
+        buttons = (QPushButton(new_label), QPushButton("Renombrar"), QPushButton("Eliminar"))
+        for button, name in zip(buttons, ("ghostButton", "ghostButton", "deleteButton")):
+            button.setObjectName(name)
+            row.addWidget(button)
+        row.addStretch(1)
+        layout.addLayout(row)
+        return card, items, buttons
+
+    @staticmethod
+    def _selected(items: QListWidget) -> tuple[str, str] | None:
+        """(id, name) of the selected row, or None."""
+        chosen = items.selectedItems()
+        if not chosen:
+            return None
+        return str(chosen[0].data(Qt.ItemDataRole.UserRole)), chosen[0].text()
+
+    @staticmethod
+    def _fill(items: QListWidget, rows: list[dict], selected_id: str | None) -> None:
+        items.blockSignals(True)
+        items.clear()
+        for row in rows:
+            item = QListWidgetItem(row["name"])
+            item.setData(Qt.ItemDataRole.UserRole, row["id"])
+            item.setToolTip(_count_label(row["meeting_count"]))
+            items.addItem(item)
+            if row["id"] == selected_id:
+                items.setCurrentItem(item)
+                item.setSelected(True)
+        items.blockSignals(False)
+
+    def reload(self, organization_id: object = ANY, project_id: object = ANY) -> None:
+        """Re-read both lists; ANY keeps the current selection."""
+        if organization_id is ANY:
+            current = self._selected(self.organization_list)
+            organization_id = current[0] if current else None
+        self._fill(self.organization_list, self.store.list_organizations(), organization_id)
+        self._reload_projects(project_id)
+
+    def _reload_projects(self, project_id: object = ANY) -> None:
+        if project_id is ANY:
+            current = self._selected(self.project_list)
+            project_id = current[0] if current else None
+        organization = self._selected(self.organization_list)
+        rows = self.store.list_projects(organization[0]) if organization else []
+        self._fill(self.project_list, rows, project_id)
+        self._sync_buttons()
+
+    def _sync_buttons(self) -> None:
+        has_organization = self._selected(self.organization_list) is not None
+        has_project = self._selected(self.project_list) is not None
+        self.rename_organization_button.setEnabled(has_organization)
+        self.delete_organization_button.setEnabled(has_organization)
+        self.new_project_button.setEnabled(has_organization)
+        self.rename_project_button.setEnabled(has_project)
+        self.delete_project_button.setEnabled(has_project)
+
+    def _run(self, action: Callable[[], object]) -> object:
+        try:
+            result = action()
+        except ValueError as exc:
+            self.show_error(str(exc))
+            return _FAILED
+        self.changed.emit()
+        return result
+
+    def _new_organization(self) -> None:
+        name = self.ask_name("Nueva organización", "Nombre de la organización:")
+        if name is None:
+            return
+        created = self._run(lambda: self.store.create_organization(name))
+        if created is not _FAILED:
+            self.reload(created, None)
+
+    def _rename_organization(self) -> None:
+        selected = self._selected(self.organization_list)
+        if selected is None:
+            return
+        name = self.ask_name("Renombrar organización", "Nuevo nombre:", selected[1])
+        if name is not None and self._run(lambda: self.store.rename_organization(selected[0], name)) is not _FAILED:
+            self.reload()
+
+    def _delete_organization(self) -> None:
+        selected = self._selected(self.organization_list)
+        if selected is None or not self.confirm(
+            "Eliminar organización",
+            f'¿Eliminar "{selected[1]}" y sus proyectos? Sus reuniones pasarán al Cofre de reuniones.',
+        ):
+            return
+        if self._run(lambda: self.store.delete_organization(selected[0])) is not _FAILED:
+            self.reload(None, None)
+
+    def _new_project(self) -> None:
+        organization = self._selected(self.organization_list)
+        if organization is None:
+            return
+        name = self.ask_name("Nuevo proyecto", f"Nombre del proyecto en {organization[1]}:")
+        if name is None:
+            return
+        created = self._run(lambda: self.store.create_project(organization[0], name))
+        if created is not _FAILED:
+            self.reload(organization[0], created)
+
+    def _rename_project(self) -> None:
+        selected = self._selected(self.project_list)
+        if selected is None:
+            return
+        name = self.ask_name("Renombrar proyecto", "Nuevo nombre:", selected[1])
+        if name is not None and self._run(lambda: self.store.rename_project(selected[0], name)) is not _FAILED:
+            self.reload()
+
+    def _delete_project(self) -> None:
+        organization, selected = self._selected(self.organization_list), self._selected(self.project_list)
+        if organization is None or selected is None or not self.confirm(
+            "Eliminar proyecto",
+            f'¿Eliminar el proyecto "{selected[1]}"? Sus reuniones quedarán en {organization[1]} sin proyecto.',
+        ):
+            return
+        if self._run(lambda: self.store.delete_project(selected[0])) is not _FAILED:
+            self.reload(organization[0], None)
 
 
 class PlacementPicker(QWidget):

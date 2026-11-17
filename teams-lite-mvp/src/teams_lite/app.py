@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
     QComboBox,
+    QDialog,
     QFileDialog,
     QFrame,
     QHeaderView,
@@ -62,7 +63,7 @@ from .hotkey import (
     register_moment_hotkey,
     unregister_moment_hotkey,
 )
-from .library_ui import THUMBNAIL_SIZE, PlacementPicker, PreviewPage
+from .library_ui import THUMBNAIL_SIZE, AdminPage, MoveMeetingDialog, PlacementPicker, PreviewPage
 from .minutes import MinutesError, generate_minutes, load_minutes
 from .moments import capture_moment, format_offset, load_moments, moments_for_minutes
 from .ocr import load_participants, merge_participants, read_teams_names
@@ -923,6 +924,7 @@ class MainWindow(QMainWindow):
         self.ocr_checkbox.toggled.connect(self._sync_ocr_button)
         self.table.itemSelectionChanged.connect(self.show_selected_transcript)
         self.delete_button.clicked.connect(self.delete_selected_meeting)
+        self.move_button.clicked.connect(lambda: self.move_meeting())
         self.copy_button.clicked.connect(self.copy_transcript)
         self.download_button.clicked.connect(self.download_transcript)
         self.generate_minutes_button.clicked.connect(self.generate_minutes_for_selected)
@@ -949,7 +951,42 @@ class MainWindow(QMainWindow):
             ),
         )
         page.open_meeting.connect(self.open_meeting)
+        page.move_meeting.connect(self.move_meeting)
         return page
+
+    def _build_admin_page(self) -> QWidget:
+        page = AdminPage(self.store)
+        page.changed.connect(self._library_changed)
+        return page
+
+    def _library_changed(self) -> None:
+        self.placement_picker.reload()
+        self.preview_page.refresh()
+        self._refresh()
+
+    def _choose_placement(self, meeting: dict) -> tuple[str | None, str | None] | None:
+        dialog = MoveMeetingDialog(self.store, meeting["organization_id"], meeting["project_id"], self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return dialog.placement()
+
+    def move_meeting(self, meeting_id: str | None = None) -> None:
+        """Files a meeting in another organization or project, or back in the vault."""
+        meeting_id = meeting_id or self._selected_meeting_id()
+        meeting = next((row for row in self.store.list_meetings() if row["id"] == meeting_id), None)
+        if meeting is None:
+            return
+        placement = self._choose_placement(meeting)
+        if placement is None:
+            return
+        try:
+            self.store.move_meeting(meeting_id, *placement)
+        except ValueError as exc:
+            self._show_error(f"No se pudo mover la reunión: {exc}")
+            return
+        self.preview_page.refresh()
+        self._refresh()
+        self._set_status("Reunión movida.", tone="success")
 
     def open_meeting(self, meeting_id: str) -> None:
         """Shows a meeting picked in another section on the Teams Lite page."""
@@ -961,9 +998,6 @@ class MainWindow(QMainWindow):
                 self.table.selectRow(row)
                 self.table.scrollToItem(item)
                 return
-
-    def _build_admin_page(self) -> QWidget:
-        return QWidget()
 
     def _show_section(self, row: int) -> None:
         if row < 0:
@@ -1203,10 +1237,13 @@ class MainWindow(QMainWindow):
         self.download_button = QPushButton("Descargar")
         self.download_button.setObjectName("ghostButton")
         set_button_icon(self.download_button, "download", COLORS["text_soft"], gap=6)
+        self.move_button = QPushButton("Mover a…")
+        self.move_button.setObjectName("ghostButton")
+        set_button_icon(self.move_button, "folder", COLORS["text_soft"], gap=6)
         self.delete_button = QPushButton("Eliminar reunión")
         self.delete_button.setObjectName("deleteButton")
         set_button_icon(self.delete_button, "trash", COLORS["danger"], gap=6)
-        for button in (self.copy_button, self.download_button, self.delete_button):
+        for button in (self.copy_button, self.download_button, self.move_button, self.delete_button):
             button.setEnabled(False)
             header.addWidget(button)
         layout.addLayout(header)
@@ -1683,6 +1720,7 @@ class MainWindow(QMainWindow):
     def show_selected_transcript(self) -> None:
         meeting_id = self._selected_meeting_id()
         self.delete_button.setEnabled(meeting_id is not None)
+        self.move_button.setEnabled(meeting_id is not None)
         self._show_attendees(meeting_id)
         self._moments = load_moments(self.store.root / meeting_id) if meeting_id else []
         self._load_transcript(meeting_id)
@@ -1987,6 +2025,7 @@ class MainWindow(QMainWindow):
             return
         self.table.clearSelection()
         self.delete_button.setEnabled(False)
+        self.move_button.setEnabled(False)
         self.transcript_meta.clear()
         self._show_transcript_placeholder("Selecciona una reunión para ver su transcripción.")
         self._set_status("Reunión eliminada.", tone="success")

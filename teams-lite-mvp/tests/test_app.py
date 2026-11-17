@@ -13,7 +13,7 @@ from PySide6.QtWidgets import QApplication
 
 from teams_lite.app import _MEETING_ROLE, MainWindow
 from teams_lite.config import AppConfig
-from teams_lite.library_ui import THUMBNAIL_ROLE
+from teams_lite.library_ui import THUMBNAIL_ROLE, MoveMeetingDialog
 from teams_lite.moments import load_moments
 from teams_lite.ocr import load_participants, merge_participants
 from teams_lite.storage import Storage
@@ -1107,6 +1107,122 @@ class LibraryUiTests(unittest.TestCase):
                 self.assertIs(window.pages.currentWidget(), window.recording_page)
                 self.assertEqual(window.side_nav.currentRow(), 0)
                 self.assertEqual(window._selected_meeting_id(), first)
+            finally:
+                window.close()
+
+    @staticmethod
+    def _list_texts(widget):
+        return [widget.item(row).text() for row in range(widget.count())]
+
+    def test_admin_manages_organizations_and_projects(self):
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False))
+            window.timer.stop()
+            try:
+                admin = window.admin_page
+                errors = []
+                answers = iter(['Zenith', 'CRM', 'Portal', 'portal', 'Zenith Consulting'])
+                admin.ask_name = lambda *_args: next(answers)
+                admin.confirm = lambda *_args: True
+                admin.show_error = errors.append
+
+                admin.new_organization_button.click()
+                self.assertEqual(self._list_texts(admin.organization_list), ['Zenith'])
+                self.assertEqual(window.placement_picker.organization_combo.itemText(1), 'Zenith')
+                admin.organization_list.setCurrentRow(0)
+                self.assertTrue(admin.new_project_button.isEnabled())
+
+                admin.new_project_button.click()
+                admin.project_list.setCurrentRow(0)
+                admin.rename_project_button.click()
+                self.assertEqual(self._list_texts(admin.project_list), ['Portal'])
+                admin.new_project_button.click()  # "portal" already exists in this organization
+                self.assertEqual(len(errors), 1)
+                self.assertIn('Ya existe', errors[0])
+                self.assertEqual(self._list_texts(admin.project_list), ['Portal'])
+
+                admin.rename_organization_button.click()
+                self.assertEqual(self._list_texts(admin.organization_list), ['Zenith Consulting'])
+
+                [organization] = storage.list_organizations()
+                [project] = storage.list_projects(organization['id'])
+                meeting = storage.create_meeting('m', organization_id=organization['id'], project_id=project['id'])
+                admin.project_list.setCurrentRow(0)
+                admin.delete_project_button.click()
+                self.assertEqual(self._list_texts(admin.project_list), [])
+                admin.delete_organization_button.click()
+                self.assertEqual(self._list_texts(admin.organization_list), [])
+                self.assertEqual([row['id'] for row in storage.list_meetings(organization_id=None)], [meeting])
+                self.assertEqual(window.placement_picker.organization_combo.count(), 1)
+            finally:
+                window.close()
+
+    def test_admin_delete_asks_first_and_keeps_everything_when_cancelled(self):
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            zenith = storage.create_organization('Zenith')
+            window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False))
+            window.timer.stop()
+            try:
+                admin = window.admin_page
+                questions = []
+                admin.confirm = lambda title, text: questions.append(text) or False
+                admin.organization_list.setCurrentRow(0)
+                admin.delete_organization_button.click()
+
+                self.assertIn('Cofre de reuniones', questions[0])
+                self.assertEqual([org['id'] for org in storage.list_organizations()], [zenith])
+            finally:
+                window.close()
+
+    def test_move_dialog_starts_from_the_current_placement(self):
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            zenith = storage.create_organization('Zenith')
+            crm = storage.create_project(zenith, 'CRM')
+            dialog = MoveMeetingDialog(storage, zenith, crm)
+            try:
+                self.assertEqual(dialog.placement(), (zenith, crm))
+                dialog.picker.organization_combo.setCurrentIndex(0)
+                self.assertEqual(dialog.placement(), (None, None))
+            finally:
+                dialog.close()
+
+    def test_moving_a_meeting_from_preview_and_teams_lite(self):
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            zenith = storage.create_organization('Zenith')
+            crm = storage.create_project(zenith, 'CRM')
+            meeting = storage.create_meeting('m')
+            storage.finish_meeting(meeting)
+            window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False))
+            window.timer.stop()
+            try:
+                offered = []
+                window._choose_placement = lambda meeting_row: offered.append(meeting_row['id']) or (zenith, crm)
+                page = window.preview_page
+                window.side_nav.setCurrentRow(1)
+                self._click_card(page, 'Cofre de reuniones')
+                page.meeting_list.setCurrentRow(0)
+                self.assertTrue(page.move_button.isEnabled())
+                page.move_button.click()
+
+                self.assertEqual(offered, [meeting])
+                [moved] = storage.list_meetings()
+                self.assertEqual((moved['organization_id'], moved['project_id']), (zenith, crm))
+                self.assertIs(page.stack.currentWidget(), page.empty_label)  # the vault is now empty
+
+                window._choose_placement = lambda _meeting: (None, None)
+                window.open_meeting(meeting)
+                self.assertTrue(window.move_button.isEnabled())
+                window.move_button.click()
+                self.assertEqual([row['id'] for row in storage.list_meetings(organization_id=None)], [meeting])
+                self.assertEqual(window._selected_meeting_id(), meeting)
+
+                window._choose_placement = lambda _meeting: None  # cancelled dialog changes nothing
+                window.move_button.click()
+                self.assertEqual([row['id'] for row in storage.list_meetings(organization_id=None)], [meeting])
             finally:
                 window.close()
 
