@@ -113,7 +113,8 @@ While recording, "Marcar momento" (with an optional note) or the global hotkey *
 - Each moment stores its time in the recording and a JPEG screenshot of the Teams window in `data/<meeting>/moments/` (index in `moments.jsonl`).
 - If Teams is minimized or hidden, the moment is still recorded without a screenshot, and the status line says why. Windows does not render minimized windows, so nothing can be captured from them.
 - Moments appear in the transcript at their time (double-click opens the screenshot) and are sent to the minutes as text only; screenshots never leave the machine.
-- If another application already owns Ctrl+Alt+M, the recording card says so and the button keeps working.
+- If another application already owns Ctrl+Alt+M, the recording card says so, the button and the mascot's *Captura* keep working, and Teams Lite retries the hotkey every 5 seconds until it is free.
+- Each recording logs in its events whether the hotkey was ready (`moment_hotkey_ready`), taken by another application (`moment_hotkey_unavailable`) and every press it received (`moment_hotkey_pressed`), so a press that never marked a moment can be explained.
 - Teams is captured with `PrintWindow(PW_RENDERFULLCONTENT)`: a plain screen grab of a WebView2/Chromium window returns black, while this works even when other windows cover Teams. All-black captures are discarded.
 - With a single monitor while presenting, Teams is often minimized: a moment marked by hand then captures the monitor under the cursor (what participants are seeing). Automatic attendee OCR never captures the whole screen.
 
@@ -214,7 +215,7 @@ To publish an update, raise `version` in `pyproject.toml` and `__version__` in `
 
 ### Organizations, projects and preview
 
-The left menu has three sections:
+The left menu has four sections; the fourth, **Mascota**, is described below:
 
 - **Grabar** has two halves. On the left, **Nueva grabación** (title, **Organización** and **Proyecto**) and, below it, **Grabaciones recientes**, which lists only the meetings of the organization and project chosen for recording; its header names them. With no organization chosen, meetings go to the **Cofre de reuniones**, the default place for unfiled meetings. Under the list, **Renombrar**, **Mover**, **Exportar** and **Eliminar reunión** act on the selected meeting. Renaming changes only the title; the folder on disk keeps its name. On the right, the selected meeting over the full height, with the views *Transcripción*, *Minuta*, *Chat con IA* and **Capturas**. Windows narrower than 1120 px stack the halves.
 - **Capturas** shows every screenshot of the meeting: marked moments in time order (with their note), then the active-speaker frames. Thumbnails load a few at a time, so long meetings stay responsive; double-click one to open it full size.
@@ -222,6 +223,16 @@ The left menu has three sections:
 - **Organización** creates, renames and deletes organizations and projects. A summary shows how many organizations, projects and filed meetings there are and how many meetings wait in the Cofre. Each row shows its meeting count, the project column is titled with the selected organization, and empty lists say what to do next. Names are unique, ignoring case (projects within their organization). Deleting an organization sends its meetings to the Cofre; deleting a project keeps its meetings in the organization without a project. Meetings are never deleted from here.
 
 Filing is metadata only: a moved meeting keeps its folder under `data/`. Databases from earlier versions gain the new columns on first launch, and their meetings appear in the Cofre.
+
+### Mascot
+
+A small mascot floats over the other windows, Teams included, so recording does not need Teams Lite in front:
+
+- **Grabar** starts recording at once, without asking for a title, organization or project; **Detener** stops it. A timer shows the recording time.
+- **Captura** marks a moment with a screenshot, like Ctrl+Alt+M, and **OCR** reads the attendees visible in Teams. Both work while recording.
+- Drag it anywhere; it remembers where it was left. Double-click it to bring Teams Lite to the front. Closing Teams Lite closes the mascot.
+
+The **Mascota** section of the left menu sets what the mascot records with: the meeting title (default *Reunión rápida*), the organization and project (none means the Cofre de reuniones), whether the mascot is shown, and a button to put it back in its starting corner. Changes apply at once and are stored in `data/mascot.json`. If the default organization is deleted, the default becomes the Cofre; if only the default project is gone, a quick recording stays in the organization without a project and the status says so.
 
 ### Sharing meetings (export and import)
 
@@ -258,6 +269,8 @@ src/teams_lite/
   library_ui.py     organization/project picker, Biblioteca and Organización pages
   chat.py           chat workspace and multi-turn Claude/Codex sessions
   chat_ui.py        chat panel shown in Grabar and Biblioteca
+  mascot.py         mascot defaults (data/mascot.json) and where a quick recording is filed
+  mascot_ui.py      floating mascot and the Mascota section
   previews.py       picks the screenshot that represents a meeting
   sharing.py        meeting export/import packages (.zip)
   transcription.py  CPU ONNX transcription and timestamped exports
