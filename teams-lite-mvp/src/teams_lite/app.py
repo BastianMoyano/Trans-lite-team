@@ -27,6 +27,7 @@ from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QBoxLayout,
     QButtonGroup,
     QCheckBox,
     QComboBox,
@@ -85,41 +86,58 @@ from .window_capture import FrameSampler, TeamsWindowUnavailable, capture_teams_
 
 
 COLORS = {
-    "background": "#141414",
-    "surface": "#1A1A1A",
-    "surface_raised": "#232323",
-    "border": "#2E2E2E",
-    "text": "#EDEDED",
-    "text_soft": "#D4D4D4",
-    "text_muted": "#8F8F8F",
-    "text_subtle": "#6B6B6B",
-    "success": "#4ADE80",
+    "background": "#17191C",
+    "surface": "#20242A",
+    "surface_raised": "#292F37",
+    "border": "#3A424C",
+    "text": "#F3F5F7",
+    "text_soft": "#C7D0D9",
+    "text_muted": "#929EAC",
+    "text_subtle": "#697684",
+    "accent": "#46C7B5",
+    "accent_hover": "#5AD7C5",
+    "accent_soft": "#173C3A",
+    "focus": "#8BE0D2",
+    "success": "#63D69A",
     "warning": "#F5B544",
     "danger": "#F87171",
 }
 
 APP_STYLESHEET = """
 QMainWindow, QScrollArea#pageScroll, QWidget#pageContent {
-    background: #141414;
-    color: #EDEDED;
+    background: #17191C;
+    color: #F3F5F7;
 }
 QLabel {
-    color: #EDEDED;
+    color: #F3F5F7;
     background: transparent;
 }
 QLabel#eyebrow {
-    color: #8F8F8F;
+    color: #46C7B5;
     font-size: 12px;
 }
 QLabel#pageTitle {
-    color: #EDEDED;
+    color: #F3F5F7;
     font-size: 20px;
     font-weight: 700;
 }
 QFrame#appMark {
-    background: #1A1A1A;
-    border: 1px solid #3A3A3A;
+    background: #173C3A;
+    border: 1px solid #46C7B5;
     border-radius: 8px;
+}
+QFrame#sideRail {
+    background: #121619;
+    border-right: 1px solid #3A424C;
+}
+QLabel#brandTitle {
+    color: #F3F5F7;
+    font-size: 15px;
+    font-weight: 700;
+}
+QLabel#brandTagline, QLabel#sideFooter {
+    color: #697684;
+    font-size: 11px;
 }
 QLabel#statePill {
     padding: 4px 10px;
@@ -156,21 +174,21 @@ QLabel#updateText {
     font-size: 13px;
 }
 QFrame#card {
-    background: #1A1A1A;
-    border: 1px solid #2E2E2E;
+    background: #20242A;
+    border: 1px solid #3A424C;
     border-radius: 12px;
 }
 QLabel#sectionTitle {
-    color: #EDEDED;
+    color: #F3F5F7;
     font-size: 16px;
     font-weight: 600;
 }
 QLabel#sectionMeta, QLabel#fieldHint, QLabel#statusText {
-    color: #8F8F8F;
+    color: #929EAC;
     font-size: 12px;
 }
 QFrame#divider {
-    background: #2E2E2E;
+    background: #3A424C;
     max-height: 1px;
     min-height: 1px;
     border: none;
@@ -178,30 +196,31 @@ QFrame#divider {
 QLineEdit {
     min-height: 42px;
     padding: 0 12px;
-    background: #141414;
-    border: 1px solid #3A3A3A;
+    background: #17191C;
+    border: 1px solid #3A424C;
     border-radius: 8px;
-    color: #EDEDED;
+    color: #F3F5F7;
     font-size: 14px;
     selection-background-color: #3B3B3B;
 }
 QLineEdit:focus {
-    border: 1px solid #8F8F8F;
+    border: 2px solid #8BE0D2;
 }
 QPushButton {
-    min-height: 40px;
+    min-height: 42px;
     padding: 0 18px;
     border-radius: 8px;
-    border: 1px solid #2E2E2E;
-    background: #1A1A1A;
-    color: #EDEDED;
+    border: 1px solid #3A424C;
+    background: #20242A;
+    color: #F3F5F7;
     font-size: 14px;
 }
 QPushButton:hover {
-    background: #232323;
+    background: #292F37;
+    border-color: #53606D;
 }
 QPushButton:pressed {
-    background: #2A2A2A;
+    background: #173C3A;
 }
 QPushButton:disabled {
     color: #6B6B6B;
@@ -209,12 +228,14 @@ QPushButton:disabled {
     border-color: #262626;
 }
 QPushButton#primaryButton {
-    background: #E6E6E6;
-    border-color: #E6E6E6;
-    color: #141414;
+    background: #46C7B5;
+    border-color: #46C7B5;
+    color: #10201E;
+    font-weight: 600;
 }
 QPushButton#primaryButton:hover {
-    background: #FFFFFF;
+    background: #5AD7C5;
+    border-color: #5AD7C5;
 }
 QPushButton#dangerButton:enabled {
     background: #2A1515;
@@ -225,18 +246,18 @@ QPushButton#dangerButton:hover:enabled {
     background: #341A1A;
 }
 QPushButton#ghostButton, QPushButton#deleteButton {
-    min-height: 32px;
+    min-height: 36px;
     padding: 0 10px;
     border: none;
     background: transparent;
-    color: #D4D4D4;
+    color: #C7D0D9;
     font-size: 13px;
 }
 QPushButton#deleteButton {
     color: #F87171;
 }
 QPushButton#ghostButton:hover:enabled {
-    background: #232323;
+    background: #292F37;
 }
 QPushButton#deleteButton:hover:enabled {
     background: #2A1515;
@@ -246,7 +267,7 @@ QPushButton#ghostButton:disabled, QPushButton#deleteButton:disabled {
     color: #5A5A5A;
 }
 QCheckBox {
-    color: #D4D4D4;
+    color: #C7D0D9;
     spacing: 8px;
     font-size: 13px;
 }
@@ -289,8 +310,8 @@ QTableWidget#meetingList::item {
     border-left: 2px solid transparent;
 }
 QTableWidget#meetingList::item:selected {
-    background: #232323;
-    border-left: 2px solid #EDEDED;
+    background: #173C3A;
+    border-left: 3px solid #46C7B5;
 }
 QTableWidget#meetingList::item:hover:!selected {
     background: #1F1F1F;
@@ -304,24 +325,26 @@ QTableWidget#transcriptTable::item:selected {
     color: #EDEDED;
 }
 QListWidget#sideNav {
-    background: #101010;
+    background: transparent;
     border: none;
-    border-right: 1px solid #2E2E2E;
-    padding: 18px 10px;
-    color: #D4D4D4;
+    padding: 8px 0;
+    color: #C7D0D9;
     font-size: 14px;
     outline: none;
 }
 QListWidget#sideNav::item {
-    padding: 0 10px;
+    padding: 0 12px;
     border-radius: 8px;
+    border-left: 3px solid transparent;
 }
 QListWidget#sideNav::item:selected {
-    background: #232323;
-    color: #EDEDED;
+    background: #173C3A;
+    color: #F3F5F7;
+    border-left: 3px solid #46C7B5;
+    font-weight: 600;
 }
 QListWidget#sideNav::item:hover:!selected {
-    background: #1A1A1A;
+    background: #20242A;
 }
 QListWidget#previewGrid, QListWidget#previewMeetings, QListWidget#adminList {
     background: transparent;
@@ -408,16 +431,17 @@ QMessageBox {
 QPushButton#segmentButton {
     min-height: 30px;
     padding: 0 14px;
-    border: 1px solid #2E2E2E;
+    border: 1px solid #3A424C;
     border-radius: 6px;
     background: transparent;
-    color: #8F8F8F;
+    color: #929EAC;
     font-size: 13px;
 }
 QPushButton#segmentButton:checked {
-    background: #232323;
-    border-color: #3A3A3A;
-    color: #EDEDED;
+    background: #173C3A;
+    border-color: #46C7B5;
+    color: #8BE0D2;
+    font-weight: 600;
 }
 QPushButton#segmentButton:hover:!checked {
     color: #D4D4D4;
@@ -425,14 +449,15 @@ QPushButton#segmentButton:hover:!checked {
 QPushButton#minutesButton {
     min-height: 32px;
     padding: 0 14px;
-    border: 1px solid #E6E6E6;
+    border: 1px solid #46C7B5;
     border-radius: 6px;
-    background: #E6E6E6;
-    color: #141414;
+    background: #46C7B5;
+    color: #10201E;
+    font-weight: 600;
     font-size: 13px;
 }
 QPushButton#minutesButton:hover:enabled {
-    background: #FFFFFF;
+    background: #5AD7C5;
 }
 QPushButton#minutesButton:disabled {
     background: #232323;
@@ -464,16 +489,17 @@ QTextBrowser#minutesView {
     font-size: 13px;
 }
 QTextBrowser#chatHistory {
-    background: #141414;
-    border: 1px solid #2E2E2E;
+    background: #17191C;
+    border: 1px solid #3A424C;
     border-radius: 8px;
     padding: 8px;
-    color: #EDEDED;
+    color: #F3F5F7;
     font-size: 13px;
 }
 QPushButton#ghostButton:checked {
-    background: #232323;
-    border-color: #8F8F8F;
+    background: #173C3A;
+    border: 1px solid #46C7B5;
+    color: #8BE0D2;
 }
 """
 
@@ -618,15 +644,15 @@ QCheckBox::indicator {
     width: 16px;
     height: 16px;
     border-radius: 4px;
-    border: 1px solid #4A4A4A;
-    background: #141414;
+    border: 1px solid #53606D;
+    background: #17191C;
 }
 QCheckBox::indicator:hover {
-    border-color: #8F8F8F;
+    border-color: #8BE0D2;
 }
 QCheckBox::indicator:checked {
-    background: #E6E6E6;
-    border-color: #E6E6E6;
+    background: #46C7B5;
+    border-color: #46C7B5;
     %s
 }
 QCheckBox::indicator:disabled {
@@ -634,7 +660,7 @@ QCheckBox::indicator:disabled {
     background: #1A1A1A;
 }
 """
-    check_svg = _SVG_TEMPLATE.format(fill="none", stroke=COLORS["background"], body='<path d="M5 12.5l4.5 4.5L19 7.5"/>')
+    check_svg = _SVG_TEMPLATE.format(fill="none", stroke="#10201E", body='<path d="M5 12.5l4.5 4.5L19 7.5"/>')
     try:
         path = Path(tempfile.gettempdir()) / "teams-lite-ui" / "check.svg"
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -922,11 +948,11 @@ class MainWindow(QMainWindow):
         layout.addLayout(self._build_header())
         layout.addWidget(self._build_update_banner())
         layout.addWidget(self._build_notice())
-        columns = QHBoxLayout()
-        columns.setSpacing(16)
-        columns.addWidget(self._build_recording_card(), 1)
-        columns.addWidget(self._build_history_card(), 1)
-        layout.addLayout(columns)
+        self.overview_columns = QBoxLayout(QBoxLayout.Direction.LeftToRight)
+        self.overview_columns.setSpacing(16)
+        self.overview_columns.addWidget(self._build_recording_card(), 1)
+        self.overview_columns.addWidget(self._build_history_card(), 1)
+        layout.addLayout(self.overview_columns)
         layout.addWidget(self._build_transcript_card(), 1)
         scroll.setWidget(content)
         self.recording_page = scroll
@@ -936,26 +962,58 @@ class MainWindow(QMainWindow):
         self.pages = QStackedWidget()
         self.side_nav = QListWidget()
         self.side_nav.setObjectName("sideNav")
-        self.side_nav.setFixedWidth(190)
         self.side_nav.setFrameShape(QFrame.Shape.NoFrame)
         self.side_nav.setIconSize(QSize(16, 16))
         for label, icon, page in (
-            ("Teams Lite", "app", self.recording_page),
-            ("Vista previa", "image", self.preview_page),
-            ("Administrar", "folder", self.admin_page),
+            ("Grabar", "app", self.recording_page),
+            ("Biblioteca", "image", self.preview_page),
+            ("Organización", "folder", self.admin_page),
         ):
-            item = QListWidgetItem(QIcon(_render_svg(icon, COLORS["text_soft"], 16)), label)
-            item.setSizeHint(QSize(0, 40))
+            item = QListWidgetItem(QIcon(_render_svg(icon, COLORS["accent"], 16)), label)
+            item.setSizeHint(QSize(0, 44))
             self.side_nav.addItem(item)
             self.pages.addWidget(page)
         self.side_nav.currentRowChanged.connect(self._show_section)
         self.side_nav.setCurrentRow(0)
+
+        sidebar = QFrame()
+        sidebar.setObjectName("sideRail")
+        sidebar.setFixedWidth(220)
+        sidebar_layout = QVBoxLayout(sidebar)
+        sidebar_layout.setContentsMargins(16, 18, 16, 14)
+        sidebar_layout.setSpacing(12)
+        brand = QHBoxLayout()
+        brand.setSpacing(10)
+        brand_mark = QFrame()
+        brand_mark.setObjectName("appMark")
+        brand_mark.setFixedSize(36, 36)
+        brand_mark_layout = QVBoxLayout(brand_mark)
+        brand_mark_layout.setContentsMargins(0, 0, 0, 0)
+        brand_mark_layout.addWidget(
+            _icon_label("app", COLORS["accent"], 16), 0, Qt.AlignmentFlag.AlignCenter
+        )
+        brand.addWidget(brand_mark, 0, Qt.AlignmentFlag.AlignVCenter)
+        brand_copy = QVBoxLayout()
+        brand_copy.setSpacing(1)
+        self.brand_title = QLabel("Teams Lite")
+        self.brand_title.setObjectName("brandTitle")
+        self.brand_tagline = QLabel("Memoria de tus reuniones")
+        self.brand_tagline.setObjectName("brandTagline")
+        brand_copy.addWidget(self.brand_title)
+        brand_copy.addWidget(self.brand_tagline)
+        brand.addLayout(brand_copy, 1)
+        sidebar_layout.addLayout(brand)
+        sidebar_layout.addWidget(self.side_nav, 1)
+        footer = QLabel(f"v{__version__} · datos locales")
+        footer.setObjectName("sideFooter")
+        sidebar_layout.addWidget(footer)
+
         shell = QWidget()
         shell.setObjectName("pageContent")
         shell_layout = QHBoxLayout(shell)
         shell_layout.setContentsMargins(0, 0, 0, 0)
         shell_layout.setSpacing(0)
-        shell_layout.addWidget(self.side_nav)
+        shell_layout.addWidget(sidebar)
         shell_layout.addWidget(self.pages, 1)
         self.setCentralWidget(shell)
 
@@ -976,6 +1034,17 @@ class MainWindow(QMainWindow):
         self.view_transcript_button.clicked.connect(lambda: self._set_view("transcript"))
         self.view_minutes_button.clicked.connect(lambda: self._set_view("minutes"))
         self.view_chat_button.clicked.connect(lambda: self._set_view("chat"))
+
+    def resizeEvent(self, event) -> None:
+        """Stack overview cards when the window is too narrow to keep both readable."""
+        super().resizeEvent(event)
+        if hasattr(self, "overview_columns"):
+            direction = (
+                QBoxLayout.Direction.TopToBottom
+                if event.size().width() < 1120
+                else QBoxLayout.Direction.LeftToRight
+            )
+            self.overview_columns.setDirection(direction)
 
     def _build_preview_page(self) -> QWidget:
         placeholder = QPixmap(THUMBNAIL_SIZE)
@@ -1144,14 +1213,14 @@ class MainWindow(QMainWindow):
         mark.setFixedSize(40, 40)
         mark_layout = QVBoxLayout(mark)
         mark_layout.setContentsMargins(0, 0, 0, 0)
-        mark_layout.addWidget(_icon_label("app", COLORS["text"], 18), 0, Qt.AlignmentFlag.AlignCenter)
+        mark_layout.addWidget(_icon_label("app", COLORS["accent"], 18), 0, Qt.AlignmentFlag.AlignCenter)
         header.addWidget(mark, 0, Qt.AlignmentFlag.AlignVCenter)
 
         titles = QVBoxLayout()
         titles.setSpacing(2)
-        eyebrow = QLabel("Captura recuperable de reuniones")
+        eyebrow = QLabel("GRABACIÓN Y MEMORIA DE REUNIONES")
         eyebrow.setObjectName("eyebrow")
-        page_title = QLabel("Teams Lite")
+        page_title = QLabel("Grabar reunión")
         page_title.setObjectName("pageTitle")
         titles.addWidget(eyebrow)
         titles.addWidget(page_title)
@@ -1259,7 +1328,8 @@ class MainWindow(QMainWindow):
         self._set_recording_controls(recording=False)
 
         layout.addSpacing(4)
-        self.ocr_checkbox = QCheckBox("Lista de asistentes por OCR (ventana de Teams)")
+        self.ocr_checkbox = QCheckBox("Detectar asistentes con OCR")
+        self.ocr_checkbox.setToolTip("Lee los nombres visibles en la ventana de Teams durante la grabación")
         self.ocr_checkbox.setChecked(self.config.ocr_enabled)
         layout.addWidget(self.ocr_checkbox)
         self.ocr_button = QPushButton("Capturar asistentes ahora")
@@ -1267,7 +1337,8 @@ class MainWindow(QMainWindow):
         set_button_icon(self.ocr_button, "app", COLORS["text_soft"])
         self.ocr_button.setEnabled(False)
         layout.addWidget(self.ocr_button, 0, Qt.AlignmentFlag.AlignLeft)
-        self.visual_speaker_checkbox = QCheckBox("Identificar hablante activo con WeVisOne-VL")
+        self.visual_speaker_checkbox = QCheckBox("Identificar al hablante activo")
+        self.visual_speaker_checkbox.setToolTip("Usa WeVisOne-VL cuando el modelo visual está disponible")
         self.visual_speaker_checkbox.setChecked(self.config.visual_speaker_enabled)
         layout.addWidget(self.visual_speaker_checkbox)
         # Only offer the heavy visual model when it is configured or actually installed.
@@ -1361,21 +1432,24 @@ class MainWindow(QMainWindow):
         header.addWidget(title, 0, Qt.AlignmentFlag.AlignBaseline)
         header.addWidget(self.transcript_meta, 0, Qt.AlignmentFlag.AlignBaseline)
         header.addStretch(1)
+        layout.addLayout(header)
+
+        actions = QHBoxLayout()
+        actions.setSpacing(6)
         self.copy_button = QPushButton("Copiar")
         self.copy_button.setObjectName("ghostButton")
         set_button_icon(self.copy_button, "copy", COLORS["text_soft"], gap=6)
         self.download_button = QPushButton("Descargar")
         self.download_button.setObjectName("ghostButton")
         set_button_icon(self.download_button, "download", COLORS["text_soft"], gap=6)
-        # Icon-only: the header already holds four labelled actions and must stay narrow.
-        self.move_button = QPushButton()
-        self.export_button = QPushButton()
+        self.move_button = QPushButton("Mover")
+        self.export_button = QPushButton("Exportar")
         for button, icon, label, tip in (
             (self.move_button, "folder", "Mover a…", "Mover a otra organización o proyecto"),
             (self.export_button, "share", "Exportar…", "Exportar la reunión en un paquete .zip para compartirla"),
         ):
-            button.setObjectName("iconButton")
-            button.setIcon(QIcon(_render_svg(icon, COLORS["text_soft"], 14)))
+            button.setObjectName("ghostButton")
+            set_button_icon(button, icon, COLORS["text_soft"], gap=6)
             button.setAccessibleName(label)
             button.setToolTip(tip)
         self.delete_button = QPushButton("Eliminar reunión")
@@ -1384,8 +1458,11 @@ class MainWindow(QMainWindow):
         for button in (self.copy_button, self.download_button, self.move_button, self.export_button,
                        self.delete_button):
             button.setEnabled(False)
-            header.addWidget(button)
-        layout.addLayout(header)
+        for button in (self.copy_button, self.download_button, self.move_button, self.export_button):
+            actions.addWidget(button)
+        actions.addStretch(1)
+        actions.addWidget(self.delete_button)
+        layout.addLayout(actions)
         self.transcript_attendees = QLabel()
         self.transcript_attendees.setObjectName("sectionMeta")
         self.transcript_attendees.setWordWrap(True)
@@ -1397,7 +1474,7 @@ class MainWindow(QMainWindow):
         toolbar.setSpacing(8)
         self.view_transcript_button = QPushButton("Transcripción")
         self.view_minutes_button = QPushButton("Minuta")
-        self.view_chat_button = QPushButton("Chat")
+        self.view_chat_button = QPushButton("Chat con IA")
         self.view_chat_button.setToolTip("Conversa con la IA sobre la minuta y la transcripción de esta reunión")
         self._view_group = QButtonGroup(self)
         self._view_group.setExclusive(True)

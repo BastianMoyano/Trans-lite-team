@@ -9,9 +9,9 @@ from unittest import mock
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QBoxLayout
 
-from teams_lite.app import _MEETING_ROLE, MainWindow
+from teams_lite.app import APP_STYLESHEET, COLORS, _MEETING_ROLE, MainWindow
 from teams_lite.config import AppConfig
 from teams_lite.library_ui import THUMBNAIL_ROLE, ExportOptionsDialog, MoveMeetingDialog
 from teams_lite.sharing import export_meeting, read_package
@@ -26,6 +26,37 @@ class AppTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
+
+    def test_shell_has_distinct_identity_and_discoverable_navigation(self):
+        with tempfile.TemporaryDirectory() as d:
+            window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False))
+            window.timer.stop()
+            try:
+                window.show()
+                self.application.processEvents()
+                self.assertEqual(COLORS['accent'], '#46C7B5')
+                self.assertIn(COLORS['accent'], APP_STYLESHEET)
+                self.assertEqual(window.brand_title.text(), 'Teams Lite')
+                self.assertEqual(window.brand_tagline.text(), 'Memoria de tus reuniones')
+                self.assertEqual(
+                    [window.side_nav.item(index).text() for index in range(window.side_nav.count())],
+                    ['Grabar', 'Biblioteca', 'Organización'],
+                )
+                self.assertTrue(all(not window.side_nav.item(index).icon().isNull()
+                                    for index in range(window.side_nav.count())))
+                self.assertEqual(window.move_button.text(), 'Mover')
+                self.assertEqual(window.export_button.text(), 'Exportar')
+                self.assertEqual(window.view_transcript_button.text(), 'Transcripción')
+                self.assertEqual(window.view_minutes_button.text(), 'Minuta')
+                self.assertEqual(window.view_chat_button.text(), 'Chat con IA')
+                window.resize(1010, 600)
+                self.application.processEvents()
+                self.assertEqual(window.overview_columns.direction(), QBoxLayout.Direction.TopToBottom)
+                window.resize(1190, 780)
+                self.application.processEvents()
+                self.assertEqual(window.overview_columns.direction(), QBoxLayout.Direction.LeftToRight)
+            finally:
+                window.close()
 
     def test_selected_meeting_shows_transcript_and_can_be_deleted(self):
         with tempfile.TemporaryDirectory() as d:
@@ -531,7 +562,7 @@ class ChatUiTests(unittest.TestCase):
             window = self._open(d, minutes_cli='codex')
             try:
                 panel = window.chat_panel
-                self.assertEqual(window.view_chat_button.text(), 'Chat')
+                self.assertEqual(window.view_chat_button.text(), 'Chat con IA')
                 window.view_chat_button.click()
                 self.assertIs(window.transcript_stack.currentWidget(), panel)
                 self.assertTrue(window.recording_page.isAncestorOf(panel))  # part of the app window
@@ -1121,7 +1152,7 @@ class LibraryUiTests(unittest.TestCase):
             window.timer.stop()
             try:
                 labels = [window.side_nav.item(row).text() for row in range(window.side_nav.count())]
-                self.assertEqual(labels, ['Teams Lite', 'Vista previa', 'Administrar'])
+                self.assertEqual(labels, ['Grabar', 'Biblioteca', 'Organización'])
                 self.assertIs(window.pages.currentWidget(), window.recording_page)
                 self.assertTrue(window.recording_page.isAncestorOf(window.start_button))
 
