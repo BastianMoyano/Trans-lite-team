@@ -13,7 +13,7 @@ Branch: feat/workspace-usability · Delivery: ask-on-risk · Test runner: `.venv
 - T1 [S5] inline — Storage.rename_meeting + "Renombrar" in Grabar meeting actions and Biblioteca context menu — Risk: item 1 (updates an existing stored title; user-requested, single column) — done, RED 3 → GREEN 3
 - T2 [S1] inline — recent recordings filtered by the recording card placement — done, RED 3 → GREEN 3; opening or moving the selected meeting switches the list to its project
 - T3 [S3] inline — two-column Grabar layout — done, RED (no recording_card) → GREEN layout test; meeting actions moved under the recent list, views and minutes controls on two rows, equal halves (Ignored horizontal policy); resize test starts at 1200 px (two-column mode); eventFilter no longer touches a deleted table on close
-- T4 [S2] inline — "Capturas" gallery tab — pending
+- T4 [S2] inline — "Capturas" gallery tab — done, RED 2+2 → GREEN; previews.meeting_screenshots (moments by time, then active-speaker frames; unsafe or missing images skipped) also backs meeting_thumbnail; thumbnails load 6 per timer tick; double click opens the image
 - T5 [S4] inline — Organización visual pass — pending
 - T6 [S1-S5] inline — README — pending
 

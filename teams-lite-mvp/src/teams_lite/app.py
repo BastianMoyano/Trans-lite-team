@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListView,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
@@ -76,6 +77,7 @@ from .library_ui import (
 )
 from .chat_ui import ChatPanel
 from .minutes import CLI_LABELS, MinutesError, generate_minutes, load_minutes
+from .previews import meeting_screenshots
 from .moments import capture_moment, format_offset, load_moments, moments_for_minutes
 from .ocr import load_participants, merge_participants, read_teams_names
 from .sharing import PackageError, export_meeting, import_meeting, read_package, suggest_placement
@@ -1059,6 +1061,7 @@ class MainWindow(QMainWindow):
         self.view_transcript_button.clicked.connect(lambda: self._set_view("transcript"))
         self.view_minutes_button.clicked.connect(lambda: self._set_view("minutes"))
         self.view_chat_button.clicked.connect(lambda: self._set_view("chat"))
+        self.view_gallery_button.clicked.connect(lambda: self._set_view("gallery"))
 
     def resizeEvent(self, event) -> None:
         """Stack overview cards when the window is too narrow to keep both readable."""
@@ -1573,7 +1576,10 @@ class MainWindow(QMainWindow):
         self.view_chat_button.setToolTip("Conversa con la IA sobre la minuta y la transcripción de esta reunión")
         self._view_group = QButtonGroup(self)
         self._view_group.setExclusive(True)
-        for button in (self.view_transcript_button, self.view_minutes_button, self.view_chat_button):
+        self.view_gallery_button = QPushButton("Capturas")
+        self.view_gallery_button.setToolTip("Todas las capturas de pantalla tomadas en esta reunión")
+        for button in (self.view_transcript_button, self.view_minutes_button, self.view_chat_button,
+                       self.view_gallery_button):
             button.setObjectName("segmentButton")
             button.setCheckable(True)
             self._view_group.addButton(button)
@@ -1644,6 +1650,7 @@ class MainWindow(QMainWindow):
             self.store.root, cli_provider=lambda: str(self.minutes_cli_combo.currentData())
         )
         self.transcript_stack.addWidget(self.chat_panel)
+        self.transcript_stack.addWidget(self._build_gallery())
         # Copiar and Descargar follow the conversation while the Chat tab is visible.
         self.chat_panel.conversation_changed.connect(lambda: self._view == "chat" and self._render_view())
         layout.addWidget(self.transcript_stack, 1)
@@ -2097,17 +2104,91 @@ class MainWindow(QMainWindow):
             moments = f" · {len(self._moments)} momento" + ("" if len(self._moments) == 1 else "s")
         self.transcript_meta.setText(f"{len(turns)} {noun} · {round(duration)} s{moments} · reunión {meeting_id[:8]}…")
 
+    def _build_gallery(self) -> QWidget:
+        self.gallery_page = QWidget()
+        layout = QVBoxLayout(self.gallery_page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        self.gallery_summary = QLabel()
+        self.gallery_summary.setObjectName("fieldHint")
+        self.gallery_summary.setWordWrap(True)
+        layout.addWidget(self.gallery_summary)
+        self.gallery = QListWidget()
+        self.gallery.setObjectName("previewGrid")
+        self.gallery.setViewMode(QListView.ViewMode.IconMode)
+        self.gallery.setResizeMode(QListView.ResizeMode.Adjust)
+        self.gallery.setMovement(QListView.Movement.Static)
+        self.gallery.setIconSize(THUMBNAIL_SIZE)
+        self.gallery.setGridSize(QSize(THUMBNAIL_SIZE.width() + 36, THUMBNAIL_SIZE.height() + 58))
+        self.gallery.setSpacing(8)
+        self.gallery.setWordWrap(True)
+        self.gallery.setFrameShape(QFrame.Shape.NoFrame)
+        self.gallery.itemActivated.connect(self._open_gallery_image)
+        layout.addWidget(self.gallery, 1)
+        self._gallery_pending: list[QListWidgetItem] = []
+        self._gallery_timer = QTimer(self)
+        self._gallery_timer.setInterval(0)
+        self._gallery_timer.timeout.connect(self._load_gallery_batch)
+        return self.gallery_page
+
+    def _populate_gallery(self) -> None:
+        """List every screenshot of the selected meeting; thumbnails load a few at a time."""
+        meeting_id = self._selected_meeting_id()  # re-listed each time: new moments appear while recording
+        self._gallery_timer.stop()
+        self.gallery.clear()
+        shots = meeting_screenshots(self.store.root / meeting_id) if meeting_id else []
+        placeholder = QIcon(self.preview_page.thumbnails.placeholder)
+        for shot in shots:
+            item = QListWidgetItem(placeholder, shot["label"])
+            item.setData(Qt.ItemDataRole.UserRole, str(shot["path"]))
+            item.setToolTip(f"{shot['label']} · doble clic para abrir")
+            item.setTextAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
+            self.gallery.addItem(item)
+        self._gallery_pending = [self.gallery.item(row) for row in range(self.gallery.count())]
+        if meeting_id is None:
+            self.gallery_summary.setText("Selecciona una reunión para ver sus capturas.")
+        elif not shots:
+            self.gallery_summary.setText(
+                "Esta reunión no tiene capturas. Usa \"Marcar momento\" mientras grabas para guardar la pantalla."
+            )
+        else:
+            moments = sum(1 for shot in shots if shot["kind"] == "moment")
+            noun = "captura" if len(shots) == 1 else "capturas"
+            self.gallery_summary.setText(
+                f"{len(shots)} {noun} · {moments} de momentos marcados · doble clic para abrir a tamaño completo"
+            )
+        if self._gallery_pending:
+            self._gallery_timer.start()
+
+    def _load_gallery_batch(self) -> None:
+        cache = self.preview_page.thumbnails
+        for _ in range(6):  # a few per tick keeps the window responsive with hundreds of frames
+            if not self._gallery_pending:
+                self._gallery_timer.stop()
+                return
+            item = self._gallery_pending.pop(0)
+            item.setIcon(QIcon(cache.pixmap(Path(item.data(Qt.ItemDataRole.UserRole)))))
+
+    def _open_gallery_image(self, item: QListWidgetItem) -> None:
+        path = Path(str(item.data(Qt.ItemDataRole.UserRole)))
+        if path.is_file():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+
     def _set_view(self, view: str) -> None:
         self._view = view
         self.view_transcript_button.setChecked(view == "transcript")
         self.view_minutes_button.setChecked(view == "minutes")
         self.view_chat_button.setChecked(view == "chat")
+        self.view_gallery_button.setChecked(view == "gallery")
         self._render_view()
 
     def _render_view(self) -> None:
         """Show the transcript, the minutes or the chat; Copiar and Descargar act on what is visible."""
         if self._view == "chat":
             self.transcript_stack.setCurrentWidget(self.chat_panel)
+        elif self._view == "gallery":
+            self._populate_gallery()
+            self.transcript_stack.setCurrentWidget(self.gallery_page)
         elif self._view == "minutes":
             if self._minutes:
                 self.minutes_view.setMarkdown(self._minutes)
@@ -2144,6 +2225,8 @@ class MainWindow(QMainWindow):
             self.generate_minutes_button.setText("Generar minuta")
 
     def _current_export(self) -> str:
+        if self._view == "gallery":
+            return ""  # images: open them with a double click instead
         if self._view == "chat":
             return self.chat_panel.export_text()
         if self._view == "minutes":

@@ -1472,6 +1472,70 @@ class WorkspaceLayoutTests(unittest.TestCase):
                 window.close()
 
 
+class ScreenshotGalleryTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.application = QApplication.instance() or QApplication([])
+
+    def _wait(self, condition):
+        deadline = time.monotonic() + 3
+        while not condition() and time.monotonic() < deadline:
+            self.application.processEvents()
+            time.sleep(0.01)
+
+    def test_capturas_tab_shows_every_screenshot_and_opens_it(self):
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            meeting = storage.create_meeting('Con capturas')
+            storage.finish_meeting(meeting)
+            folder = Path(d) / meeting
+            (folder / 'moments').mkdir()
+            Image.new('RGB', (320, 180), (40, 90, 160)).save(folder / 'moments' / 'a.jpg')
+            (folder / 'moments.jsonl').write_text(
+                '{"offset_seconds": 3.0, "image": "moments/a.jpg", "note": "Demo"}\n', encoding='utf-8')
+            (folder / 'visual-frames').mkdir()
+            Image.new('RGB', (320, 180), (10, 10, 10)).save(folder / 'visual-frames' / 'teams-20261117T100000000000Z.png')
+            window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False))
+            window.timer.stop()
+            try:
+                window.open_meeting(meeting)
+                self.assertEqual(window.view_gallery_button.text(), 'Capturas')
+                window.view_gallery_button.click()
+                gallery = window.gallery
+                self.assertIs(window.transcript_stack.currentWidget(), window.gallery_page)
+                self.assertTrue(window.gallery_page.isAncestorOf(gallery))
+                self._wait(lambda: gallery.count() == 2 and not gallery.item(1).icon().isNull())
+
+                self.assertEqual([gallery.item(row).text() for row in range(gallery.count())],
+                                 ['00:00:03 · Demo', 'Hablante activo · 10:00:00 UTC'])
+                self.assertTrue(all(not gallery.item(row).icon().isNull() for row in range(gallery.count())))
+                self.assertIn('2 capturas', window.gallery_summary.text())
+                self.assertFalse(window.copy_button.isEnabled())
+
+                with mock.patch('teams_lite.app.QDesktopServices.openUrl') as open_url:
+                    gallery.itemActivated.emit(gallery.item(0))
+                opened = Path(open_url.call_args.args[0].toLocalFile())
+                self.assertEqual(opened.resolve(), (folder / 'moments' / 'a.jpg').resolve())
+            finally:
+                window.close()
+
+    def test_meeting_without_screenshots_says_so(self):
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            meeting = storage.create_meeting('Sin capturas')
+            storage.finish_meeting(meeting)
+            window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False))
+            window.timer.stop()
+            try:
+                window.open_meeting(meeting)
+                window.view_gallery_button.click()
+                self.assertEqual(window.gallery.count(), 0)
+                self.assertIn('no tiene capturas', window.gallery_summary.text())
+            finally:
+                window.close()
+
+
 class RecentRecordingsScopeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
