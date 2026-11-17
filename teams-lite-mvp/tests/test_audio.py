@@ -11,6 +11,14 @@ import numpy as np
 from teams_lite.audio import Recorder, soundcard_source
 from teams_lite.storage import Storage
 
+def wait_until(condition, timeout=5.0):
+    """Poll instead of sleeping a fixed time: capture threads run late on a loaded machine."""
+    deadline = time.monotonic() + timeout
+    while not condition() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    return condition()
+
+
 class FakeSource:
     def __enter__(self): return self
     def __exit__(self, *args): pass
@@ -80,7 +88,9 @@ class AudioTests(unittest.TestCase):
             recorder = Recorder(store, meeting, sample_rate=8000, segment_seconds=0.02,
                                 source_factory=factory, retry_seconds=0.01)
             recorder.start()
-            time.sleep(0.3)
+            wait_until(lambda: opens['loopback'] == 2 and 'capture_resumed' in
+                       [event['kind'] for event in store.list_events(meeting)])
+            time.sleep(0.05)  # let both streams write a few more segments
             recorder.stop()
 
             self.assertEqual([], recorder.errors)
@@ -120,9 +130,11 @@ class AudioTests(unittest.TestCase):
                                 source_factory=factory, device_id=lambda kind: current[kind],
                                 device_check_seconds=0.01)
             recorder.start()
-            time.sleep(0.08)
+            wait_until(lambda: ('loopback', 'speakers') in opened)
+            time.sleep(0.03)  # a few device checks pass on the old default first
             current['loopback'] = 'headphones'
-            time.sleep(0.15)
+            wait_until(lambda: ('loopback', 'headphones') in opened and 'device_changed' in
+                       [event['kind'] for event in store.list_events(meeting)])
             recorder.stop()
 
             self.assertIn(('loopback', 'speakers'), opened)
