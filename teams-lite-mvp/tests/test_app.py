@@ -13,7 +13,8 @@ from PySide6.QtWidgets import QApplication
 
 from teams_lite.app import _MEETING_ROLE, MainWindow
 from teams_lite.config import AppConfig
-from teams_lite.library_ui import THUMBNAIL_ROLE, MoveMeetingDialog
+from teams_lite.library_ui import THUMBNAIL_ROLE, ExportOptionsDialog, MoveMeetingDialog
+from teams_lite.sharing import export_meeting, read_package
 from teams_lite.moments import load_moments
 from teams_lite.ocr import load_participants, merge_participants
 from teams_lite.storage import Storage
@@ -1225,6 +1226,141 @@ class LibraryUiTests(unittest.TestCase):
                 self.assertEqual([row['id'] for row in storage.list_meetings(organization_id=None)], [meeting])
             finally:
                 window.close()
+
+
+class SharingUiTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.application = QApplication.instance() or QApplication([])
+
+    def setUp(self):
+        self._dirs = [tempfile.TemporaryDirectory() for _ in range(3)]
+        self.data, self.other, self.out = (Path(directory.name) for directory in self._dirs)
+
+    def tearDown(self):
+        for directory in self._dirs:
+            directory.cleanup()
+
+    def _wait_for(self, condition, seconds=5):
+        deadline = time.monotonic() + seconds
+        while not condition() and time.monotonic() < deadline:
+            self.application.processEvents()
+            time.sleep(0.01)
+        self.assertTrue(condition())
+
+    def _window(self):
+        window = MainWindow(AppConfig(data_dir=self.data, auto_transcribe=False))
+        window.timer.stop()
+        window._show_error = mock.Mock()
+        return window
+
+    def _package_from_other_pc(self, organization=None, project=None):
+        source = Storage(self.other)
+        placement = {}
+        if organization:
+            placement['organization_id'] = source.create_organization(organization)
+            if project:
+                placement['project_id'] = source.create_project(placement['organization_id'], project)
+        meeting = source.create_meeting('Compartida', **placement)
+        (source.root / meeting / 'transcript.txt').write_text('[00:00:01.000] Local: Hola\n', encoding='utf-8')
+        source.finish_meeting(meeting)
+        return export_meeting(source, meeting, self.out / 'compartida.zip')
+
+    def test_export_options_leave_audio_off_by_default(self):
+        dialog = ExportOptionsDialog()
+        try:
+            self.assertFalse(dialog.include_audio_checkbox.isChecked())
+            self.assertFalse(dialog.include_audio())
+            dialog.include_audio_checkbox.setChecked(True)
+            self.assertTrue(dialog.include_audio())
+        finally:
+            dialog.close()
+
+    def test_exporting_from_teams_lite_and_from_preview(self):
+        storage = Storage(self.data)
+        meeting = storage.create_meeting('Demo')
+        storage.finish_meeting(meeting)
+        window = self._window()
+        try:
+            asked = []
+            window._choose_export = lambda row: asked.append(row['id']) or (self.out / 'demo.zip', False)
+            window.open_meeting(meeting)
+            self.assertTrue(window.export_button.isEnabled())
+            window.export_button.click()
+            self._wait_for(lambda: (self.out / 'demo.zip').is_file() and 'Exportada' in window.status_label.text())
+            self.assertEqual(asked, [meeting])
+            self.assertEqual(read_package(self.out / 'demo.zip')['meeting']['title'], 'Demo')
+
+            window._choose_export = lambda _row: (self.out / 'preview.zip', True)
+            window.preview_page.export_meeting.emit(meeting)
+            self._wait_for(lambda: 'preview.zip' in window.status_label.text())
+            self.assertTrue(read_package(self.out / 'preview.zip')['includes_audio'])
+
+            window._choose_export = lambda _row: None  # cancelled
+            window.export_button.click()
+            self.assertEqual(sorted(path.name for path in self.out.iterdir()), ['demo.zip', 'preview.zip'])
+            window._show_error.assert_not_called()
+        finally:
+            window.close()
+
+    def test_import_lands_in_the_project_being_browsed(self):
+        package = self._package_from_other_pc('Otra empresa', 'Otro proyecto')
+        storage = Storage(self.data)
+        zenith = storage.create_organization('Zenith')
+        crm = storage.create_project(zenith, 'CRM')
+        window = self._window()
+        try:
+            offered = []
+            window._choose_import_file = lambda: package
+            window._choose_import_placement = lambda org, proj, manifest: offered.append((org, proj)) or (org, proj)
+            page = window.preview_page
+            window.side_nav.setCurrentRow(1)
+            LibraryUiTests._click_card(page, 'Zenith')
+            LibraryUiTests._click_card(page, 'CRM')
+            page.import_button.click()
+
+            self._wait_for(lambda: len(storage.list_meetings(project_id=crm)) == 1)
+            self.assertEqual(offered, [(zenith, crm)])
+            [meeting] = storage.list_meetings(project_id=crm)
+            self.assertEqual(meeting['title'], 'Compartida')
+            self._wait_for(lambda: page.meeting_list.count() == 1)
+            self.assertIn('importada', window.status_label.text())
+        finally:
+            window.close()
+
+    def test_import_suggests_the_original_organization_and_project_by_name(self):
+        package = self._package_from_other_pc('Zenith', 'CRM')
+        storage = Storage(self.data)
+        zenith = storage.create_organization('zenith')
+        crm = storage.create_project(zenith, 'crm')
+        window = self._window()
+        try:
+            offered = []
+            window._choose_import_file = lambda: package
+            window._choose_import_placement = lambda org, proj, manifest: offered.append((org, proj, manifest['project'])) or None
+            window.preview_page.import_button.click()
+
+            self.assertEqual(offered, [(zenith, crm, 'CRM')])
+            self.assertEqual(storage.list_meetings(), [])  # cancelled at the placement step
+        finally:
+            window.close()
+
+    def test_invalid_package_is_reported_and_imports_nothing(self):
+        not_a_package = self.out / 'fake.zip'
+        not_a_package.write_text('hola', encoding='utf-8')
+        storage = Storage(self.data)
+        window = self._window()
+        try:
+            window._choose_import_file = lambda: not_a_package
+            window._choose_import_placement = mock.Mock()
+            window.preview_page.import_button.click()
+
+            window._show_error.assert_called_once()
+            self.assertIn('paquete', window._show_error.call_args[0][0])
+            window._choose_import_placement.assert_not_called()
+            self.assertEqual(storage.list_meetings(), [])
+        finally:
+            window.close()
 
 
 if __name__ == '__main__':

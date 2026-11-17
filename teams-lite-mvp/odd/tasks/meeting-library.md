@@ -20,7 +20,7 @@ Branch: feat/meeting-library · Delivery: ask-on-risk · Test runner: `.venv\Scr
 - T6 [S1] inline — default window widened by the side menu width — done (549e4e3), suite 155 OK
 - T7 [S6] inline — evidence only: migration of a copy of the installed DB — done (2 meetings unchanged, 2 in vault); covered by test_existing_database_is_migrated_and_old_meetings_land_in_the_vault
 - T8 [S7] inline — sharing module: export/import package + storage adoption of imported meetings — Risk: item 2 (untrusted archive path guard) — done, RED import error → GREEN 9/9, suite 164 OK
-- T9 [S7] inline — UI: Exportar…/Importar… actions and dialogs, README — pending
+- T9 [S7] inline — UI: Exportar…/Importar… actions and dialogs, README — done, RED import error → GREEN 5 UI tests, suite 169 OK; move/export became icon buttons (header min width 1382 px vs 1448 base) after test_transcript_rows_fit_their_text_without_per_cell_measuring failed 3/3 with labelled buttons
 
 ## Log
 - L1 (2026-11-17): "hola necesito hacer unas mejoras en las runiones poder ordenarlos por organizacion y proyectos, tambien saber si tienes pantallazos las reuniones para tener un previsualizacion" + "quiero un menu al lado iz, que tenga  uno para administrar organizacion y proyectos, y otra seccion previsualizacion que salga organizacion entro y salga los proyectos cuando entre en proyecto salga las reuniones, ordenados por fecha, y que tenga previsualizacion de la screnshot, lo otro  la seccion de team lite ahi debe pedirme la organizacion y proyecto, si no seleccione que haga uno por defecto que diga cofre de reunion y que tenga la posiblidad de mover la reus a los proyectos correspondientes o organizacion"

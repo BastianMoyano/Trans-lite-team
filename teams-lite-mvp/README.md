@@ -206,6 +206,12 @@ The left menu has three sections:
 
 Filing is metadata only: a moved meeting keeps its folder under `data/`. Databases from earlier versions gain the new columns on first launch, and their meetings appear in the Cofre.
 
+### Sharing meetings (export and import)
+
+The share icon next to *Eliminar reunión* (or right-click › **Exportar…** in Vista previa) saves the meeting as a `.zip` package. It holds the transcript, minutes, marked moments with their screenshots, attendees and the first active-speaker frame. **Incluir audio** is off by default; turn it on when the receiver should be able to transcribe again (a one-hour meeting adds several hundred MB).
+
+**Importar…** in Vista previa adds a package as a new meeting. The destination starts on the organization or project being browsed. At the top level it starts on the organization and project with the same names as the sender's, ignoring case, or on the Cofre when there is no match. The meeting keeps its original title, date and status, and importing the same package twice creates two meetings. Packages are checked before anything is written: a damaged package, one from a newer Teams Lite, or one with paths that leave the meeting folder is rejected and changes nothing.
+
 Meeting data is stored under `data/<meeting-id>/`; metadata is in `data/meetings.sqlite3`. New meetings use a readable, unique folder name: local start date, hour and minute, then the title (for example `data/2026-11-13 07-44 Daily ventas/`). Characters Windows does not allow in names become `_`, the title is cut to 40 characters, and a second meeting with the same minute and title gets ` (2)`. Meetings recorded before this change keep their original folder.
 
 ## Recovery model
@@ -234,6 +240,7 @@ src/teams_lite/
   storage.py        SQLite schema, organizations/projects and interrupted-segment recovery
   library_ui.py     organization/project picker, Vista previa and Administrar pages
   previews.py       picks the screenshot that represents a meeting
+  sharing.py        meeting export/import packages (.zip)
   transcription.py  CPU ONNX transcription and timestamped exports
   speakers.py       conservative source labels/manual mapping
   ocr.py            optional screenshot OCR hints

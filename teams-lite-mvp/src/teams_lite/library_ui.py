@@ -8,6 +8,7 @@ from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -73,6 +74,8 @@ class PreviewPage(QWidget):
 
     open_meeting = Signal(str)
     move_meeting = Signal(str)
+    export_meeting = Signal(str)
+    import_requested = Signal()
 
     def __init__(
         self,
@@ -106,6 +109,10 @@ class PreviewPage(QWidget):
         self.move_button.setObjectName("ghostButton")
         self.move_button.setEnabled(False)
         header.addWidget(self.move_button)
+        self.import_button = QPushButton("Importar…")
+        self.import_button.setObjectName("ghostButton")
+        self.import_button.setToolTip("Importa un paquete .zip de reunión exportado desde otro Teams Lite")
+        header.addWidget(self.import_button)
         layout.addLayout(header)
 
         self.grid = QListWidget()
@@ -142,7 +149,17 @@ class PreviewPage(QWidget):
         )
         self.meeting_list.customContextMenuRequested.connect(self._meeting_menu)
         self.move_button.clicked.connect(self._request_move)
+        self.import_button.clicked.connect(self.import_requested.emit)
         self.refresh()
+
+    def current_placement(self) -> tuple[str | None, str | None] | None:
+        """Where the user is browsing, or None at the top level where nothing is chosen yet."""
+        if not self._path:
+            return None
+        if self._path[0][0] == "vault":
+            return None, None
+        project_id = self._path[1][1] if len(self._path) > 1 else None
+        return self._path[0][1], project_id
 
     def breadcrumb_labels(self) -> list[str]:
         return ["Organizaciones"] + [label for _, _, label in self._path]
@@ -287,6 +304,7 @@ class PreviewPage(QWidget):
         menu = QMenu(self)
         menu.addAction("Abrir", lambda: self.open_meeting.emit(meeting_id))
         menu.addAction("Mover a…", lambda: self.move_meeting.emit(meeting_id))
+        menu.addAction("Exportar…", lambda: self.export_meeting.emit(meeting_id))
         menu.exec(self.meeting_list.viewport().mapToGlobal(position))
 
 
@@ -294,13 +312,17 @@ class MoveMeetingDialog(QDialog):
     """Chooses where a meeting is filed: the vault, an organization, or one of its projects."""
 
     def __init__(self, store: Storage, organization_id: str | None, project_id: str | None,
-                 parent: QWidget | None = None):
+                 parent: QWidget | None = None, *, title: str = "Mover reunión", action: str = "Mover",
+                 note: str = ""):
         super().__init__(parent)
-        self.setWindowTitle("Mover reunión")
+        self.setWindowTitle(title)
         self.setMinimumWidth(420)
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
-        hint = QLabel("Elige dónde guardar la reunión. Sin organización queda en el Cofre de reuniones.")
+        hint = QLabel(
+            "Elige dónde guardar la reunión. Sin organización queda en el Cofre de reuniones."
+            + (f"\n{note}" if note else "")
+        )
         hint.setObjectName("fieldHint")
         hint.setWordWrap(True)
         layout.addWidget(hint)
@@ -308,7 +330,7 @@ class MoveMeetingDialog(QDialog):
         self.picker.set_placement(organization_id, project_id)
         layout.addWidget(self.picker)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Mover")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText(action)
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Cancelar")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -316,6 +338,35 @@ class MoveMeetingDialog(QDialog):
 
     def placement(self) -> tuple[str | None, str | None]:
         return self.picker.organization_id(), self.picker.project_id()
+
+
+class ExportOptionsDialog(QDialog):
+    """Asks whether the package carries the audio; it is off so packages stay light."""
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Exportar reunión")
+        self.setMinimumWidth(420)
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+        hint = QLabel(
+            "El paquete .zip lleva la transcripción, la minuta, los momentos con sus pantallazos "
+            "y los asistentes. Quien lo reciba lo importa desde Vista previa."
+        )
+        hint.setObjectName("fieldHint")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        self.include_audio_checkbox = QCheckBox("Incluir audio (permite volver a transcribir; pesa mucho más)")
+        layout.addWidget(self.include_audio_checkbox)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Elegir dónde guardar…")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Cancelar")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def include_audio(self) -> bool:
+        return self.include_audio_checkbox.isChecked()
 
 
 _FAILED = object()

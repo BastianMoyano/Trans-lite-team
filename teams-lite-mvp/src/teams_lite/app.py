@@ -63,10 +63,18 @@ from .hotkey import (
     register_moment_hotkey,
     unregister_moment_hotkey,
 )
-from .library_ui import THUMBNAIL_SIZE, AdminPage, MoveMeetingDialog, PlacementPicker, PreviewPage
+from .library_ui import (
+    THUMBNAIL_SIZE,
+    AdminPage,
+    ExportOptionsDialog,
+    MoveMeetingDialog,
+    PlacementPicker,
+    PreviewPage,
+)
 from .minutes import MinutesError, generate_minutes, load_minutes
 from .moments import capture_moment, format_offset, load_moments, moments_for_minutes
 from .ocr import load_participants, merge_participants, read_teams_names
+from .sharing import PackageError, export_meeting, import_meeting, read_package, suggest_placement
 from .storage import Storage
 from .transcription import AudioSource, CapabilityError, export_transcript, transcribe_recordings
 from .updates import UpdateInfo, check_for_update
@@ -342,6 +350,19 @@ QListWidget#previewMeetings::item:selected, QListWidget#adminList::item:selected
 QListWidget#previewMeetings::item:hover:!selected, QListWidget#adminList::item:hover:!selected {
     background: #1F1F1F;
 }
+QPushButton#iconButton {
+    min-width: 36px;
+    max-width: 36px;
+    padding: 0;
+    border: none;
+    background: transparent;
+}
+QPushButton#iconButton:hover {
+    background: #232323;
+}
+QPushButton#iconButton:disabled {
+    background: transparent;
+}
 QPushButton#crumb {
     min-height: 28px;
     padding: 0 6px;
@@ -477,6 +498,10 @@ _ICON_PATHS = {
         '<polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>'
     ),
     "flag": '<path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><path d="M4 22v-7"/>',
+    "share": (
+        '<path d="M4 12v7a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7"/>'
+        '<polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/>'
+    ),
     "image": (
         '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/>'
         '<path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/>'
@@ -727,6 +752,7 @@ class AppSignals(QObject):
     transcription_progress = Signal(str, float)
     transcription_finished = Signal(str)
     update_available = Signal(object)
+    library_task_done = Signal(str)
 
 
 _MEETING_ROLE = Qt.ItemDataRole.UserRole + 1
@@ -856,6 +882,7 @@ class MainWindow(QMainWindow):
         self.signals.transcription_progress.connect(self._on_transcription_progress)
         self.signals.transcription_finished.connect(self._on_transcription_finished)
         self.signals.update_available.connect(self.show_update)
+        self.signals.library_task_done.connect(self._library_task_done)
         self.setWindowTitle("Teams Lite")
         # The 190 px side menu sits next to the original 1000 x 780 page.
         self.resize(1190, 780)
@@ -926,6 +953,7 @@ class MainWindow(QMainWindow):
         self.table.itemSelectionChanged.connect(self.show_selected_transcript)
         self.delete_button.clicked.connect(self.delete_selected_meeting)
         self.move_button.clicked.connect(lambda: self.move_meeting())
+        self.export_button.clicked.connect(lambda: self.export_meeting())
         self.copy_button.clicked.connect(self.copy_transcript)
         self.download_button.clicked.connect(self.download_transcript)
         self.generate_minutes_button.clicked.connect(self.generate_minutes_for_selected)
@@ -953,6 +981,8 @@ class MainWindow(QMainWindow):
         )
         page.open_meeting.connect(self.open_meeting)
         page.move_meeting.connect(self.move_meeting)
+        page.export_meeting.connect(self.export_meeting)
+        page.import_requested.connect(self.import_meeting_package)
         return page
 
     def _build_admin_page(self) -> QWidget:
@@ -988,6 +1018,90 @@ class MainWindow(QMainWindow):
         self.preview_page.refresh()
         self._refresh()
         self._set_status("Reunión movida.", tone="success")
+
+    def _choose_export(self, meeting: dict) -> tuple[Path, bool] | None:
+        options = ExportOptionsDialog(self)
+        if options.exec() != QDialog.DialogCode.Accepted:
+            return None
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Exportar reunión", str(Path.home() / f"{meeting['id']}.zip"), "Paquete de reunión (*.zip)"
+        )
+        return (Path(path), options.include_audio()) if path else None
+
+    def export_meeting(self, meeting_id: str | None = None) -> None:
+        """Writes a shareable .zip package of a meeting in the background."""
+        meeting = self.store.get_meeting(meeting_id or self._selected_meeting_id() or "")
+        if meeting is None:
+            return
+        if meeting["status"] == "recording":
+            self._show_error("Detén la grabación antes de exportar esta reunión.")
+            return
+        choice = self._choose_export(meeting)
+        if choice is None:
+            return
+        path, include_audio = choice
+        self._set_status("Exportando la reunión…")
+
+        def work() -> None:
+            try:
+                written = export_meeting(self.store, meeting["id"], path, include_audio=include_audio)
+            except Exception as exc:
+                self.signals.failure.emit(f"No se pudo exportar la reunión: {exc}")
+                return
+            self.signals.library_task_done.emit(f"Exportada · {written}")
+
+        threading.Thread(target=work, name="meeting-export", daemon=True).start()
+
+    def _choose_import_file(self) -> Path | None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Importar reunión", str(Path.home()), "Paquete de reunión (*.zip)"
+        )
+        return Path(path) if path else None
+
+    def _choose_import_placement(
+        self, organization_id: str | None, project_id: str | None, manifest: dict
+    ) -> tuple[str | None, str | None] | None:
+        origin = " › ".join(name for name in (manifest.get("organization"), manifest.get("project")) if name)
+        dialog = MoveMeetingDialog(
+            self.store, organization_id, project_id, self,
+            title="Importar reunión", action="Importar",
+            note=f'"{manifest["meeting"]["title"]}"' + (f" venía de {origin}." if origin else "."),
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return dialog.placement()
+
+    def import_meeting_package(self) -> None:
+        """Imports a meeting package into the place the user picks, in the background."""
+        path = self._choose_import_file()
+        if path is None:
+            return
+        try:
+            manifest = read_package(path)
+        except PackageError as exc:
+            self._show_error(f"No se pudo importar: {exc}")
+            return
+        browsing = self.preview_page.current_placement()
+        organization_id, project_id = browsing if browsing is not None else suggest_placement(self.store, manifest)
+        placement = self._choose_import_placement(organization_id, project_id, manifest)
+        if placement is None:
+            return
+        self._set_status("Importando la reunión…")
+
+        def work() -> None:
+            try:
+                import_meeting(self.store, path, *placement)
+            except Exception as exc:
+                self.signals.failure.emit(f"No se pudo importar la reunión: {exc}")
+                return
+            self.signals.library_task_done.emit(f'Reunión importada · {manifest["meeting"]["title"]}')
+
+        threading.Thread(target=work, name="meeting-import", daemon=True).start()
+
+    def _library_task_done(self, message: str) -> None:
+        self.preview_page.refresh()
+        self._refresh()
+        self._set_status(message, tone="success")
 
     def open_meeting(self, meeting_id: str) -> None:
         """Shows a meeting picked in another section on the Teams Lite page."""
@@ -1238,13 +1352,22 @@ class MainWindow(QMainWindow):
         self.download_button = QPushButton("Descargar")
         self.download_button.setObjectName("ghostButton")
         set_button_icon(self.download_button, "download", COLORS["text_soft"], gap=6)
-        self.move_button = QPushButton("Mover a…")
-        self.move_button.setObjectName("ghostButton")
-        set_button_icon(self.move_button, "folder", COLORS["text_soft"], gap=6)
+        # Icon-only: the header already holds four labelled actions and must stay narrow.
+        self.move_button = QPushButton()
+        self.export_button = QPushButton()
+        for button, icon, label, tip in (
+            (self.move_button, "folder", "Mover a…", "Mover a otra organización o proyecto"),
+            (self.export_button, "share", "Exportar…", "Exportar la reunión en un paquete .zip para compartirla"),
+        ):
+            button.setObjectName("iconButton")
+            button.setIcon(QIcon(_render_svg(icon, COLORS["text_soft"], 14)))
+            button.setAccessibleName(label)
+            button.setToolTip(tip)
         self.delete_button = QPushButton("Eliminar reunión")
         self.delete_button.setObjectName("deleteButton")
         set_button_icon(self.delete_button, "trash", COLORS["danger"], gap=6)
-        for button in (self.copy_button, self.download_button, self.move_button, self.delete_button):
+        for button in (self.copy_button, self.download_button, self.move_button, self.export_button,
+                       self.delete_button):
             button.setEnabled(False)
             header.addWidget(button)
         layout.addLayout(header)
@@ -1722,6 +1845,7 @@ class MainWindow(QMainWindow):
         meeting_id = self._selected_meeting_id()
         self.delete_button.setEnabled(meeting_id is not None)
         self.move_button.setEnabled(meeting_id is not None)
+        self.export_button.setEnabled(meeting_id is not None)
         self._show_attendees(meeting_id)
         self._moments = load_moments(self.store.root / meeting_id) if meeting_id else []
         self._load_transcript(meeting_id)
@@ -2027,6 +2151,7 @@ class MainWindow(QMainWindow):
         self.table.clearSelection()
         self.delete_button.setEnabled(False)
         self.move_button.setEnabled(False)
+        self.export_button.setEnabled(False)
         self.transcript_meta.clear()
         self._show_transcript_placeholder("Selecciona una reunión para ver su transcripción.")
         self._set_status("Reunión eliminada.", tone="success")
