@@ -31,12 +31,14 @@ from PySide6.QtWidgets import (
 
 from .chat_ui import ChatPanel
 from .previews import meeting_thumbnail
+from .room import EmptyState, SectionHeader, room_pixmap
 from .storage import ANY, Storage
 
 VAULT_LABEL = "Cofre de reuniones"
 NO_PROJECT_LABEL = "Sin proyecto"
 THUMBNAIL_ROLE = Qt.ItemDataRole.UserRole + 10
 THUMBNAIL_SIZE = QSize(160, 90)
+TILE_ART = {"vault": "tile_vault.png", "folders": ("tile_folder_planet.png", "tile_folder_star.png")}
 
 
 COUNT_ROLE = Qt.ItemDataRole.UserRole + 20
@@ -44,6 +46,19 @@ COUNT_ROLE = Qt.ItemDataRole.UserRole + 20
 
 def _count_label(count: int) -> str:
     return f"{count} reunión" if count == 1 else f"{count} reuniones"
+
+
+def _line_icon(name: str, size: int = 22, color: str | None = None) -> QPixmap:
+    """A section-title icon from the app's outline icon set (imported late: app imports this module)."""
+    from .app import NAV_ICON_COLOR, _render_svg
+    return _render_svg(name, color or NAV_ICON_COLOR, size)
+
+
+def _room_divider() -> QFrame:
+    line = QFrame()
+    line.setObjectName("divider")
+    line.setFrameShape(QFrame.Shape.NoFrame)
+    return line
 
 
 def _plural(count: int, singular: str, plural: str) -> str:
@@ -59,7 +74,7 @@ class _CountDelegate(QStyledItemDelegate):
         if count is None:
             return
         painter.save()
-        painter.setPen(QColor("#8A97A6"))
+        painter.setPen(QColor("#A9AFD6"))
         painter.drawText(option.rect.adjusted(0, 0, -12, 0),
                          Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, _count_label(int(count)))
         painter.restore()
@@ -120,20 +135,25 @@ class PreviewPage(QWidget):
         # Each entry is (kind, id, label): kind is "vault", "organization" or "project".
         self._path: list[tuple[str, str | None, str]] = []
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(40, 28, 40, 28)
-        layout.setSpacing(14)
-        title = QLabel("Biblioteca")
-        title.setObjectName("pageTitle")
-        layout.addWidget(title)
-        subtitle = QLabel("Explora reuniones, revisa sus momentos y conversa con la IA desde un mismo lugar.")
-        subtitle.setObjectName("fieldHint")
-        subtitle.setWordWrap(True)
-        layout.addWidget(subtitle)
+        page_layout = QVBoxLayout(self)
+        page_layout.setContentsMargins(32, 20, 32, 24)
+        page_layout.setSpacing(14)
+        self.header = SectionHeader("Biblioteca")
+        page_layout.addWidget(self.header)
+        card = QFrame()
+        card.setObjectName("card")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(22, 18, 22, 18)
+        layout.setSpacing(12)
+        page_layout.addWidget(card, 1)
         header = QHBoxLayout()
-        self.breadcrumb_bar = QHBoxLayout()
-        self.breadcrumb_bar.setSpacing(4)
-        header.addLayout(self.breadcrumb_bar)
+        header.setSpacing(10)
+        layers = QLabel()
+        layers.setPixmap(_line_icon("layers"))
+        header.addWidget(layers)
+        self.grid_title = QLabel("Organizaciones")
+        self.grid_title.setObjectName("sectionTitle")
+        header.addWidget(self.grid_title)
         header.addStretch(1)
         self.chat_button = QPushButton("Conversar con IA")
         self.chat_button.setObjectName("ghostButton")
@@ -145,10 +165,16 @@ class PreviewPage(QWidget):
         self.move_button.setEnabled(False)
         header.addWidget(self.move_button)
         self.import_button = QPushButton("Importar…")
-        self.import_button.setObjectName("ghostButton")
+        self.import_button.setObjectName("outlineButton")
         self.import_button.setToolTip("Importa un paquete .zip de reunión exportado desde otro AstroMeet")
         header.addWidget(self.import_button)
         layout.addLayout(header)
+        self.breadcrumb_bar = QHBoxLayout()
+        self.breadcrumb_bar.setSpacing(4)
+        crumbs = QHBoxLayout()
+        crumbs.addLayout(self.breadcrumb_bar)
+        crumbs.addStretch(1)
+        layout.addLayout(crumbs)
 
         self.grid = QListWidget()
         self.grid.setObjectName("previewGrid")
@@ -156,8 +182,8 @@ class PreviewPage(QWidget):
         self.grid.setResizeMode(QListView.ResizeMode.Adjust)
         self.grid.setMovement(QListView.Movement.Static)
         self.grid.setIconSize(THUMBNAIL_SIZE)
-        self.grid.setGridSize(QSize(200, 160))
-        self.grid.setSpacing(12)
+        self.grid.setGridSize(QSize(224, 184))
+        self.grid.setSpacing(14)
         self.grid.setWordWrap(True)
         self.grid.setFrameShape(QFrame.Shape.NoFrame)
         self.grid.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
@@ -167,9 +193,7 @@ class PreviewPage(QWidget):
         self.meeting_list.setSpacing(4)
         self.meeting_list.setFrameShape(QFrame.Shape.NoFrame)
         self.meeting_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.empty_label = QLabel()
-        self.empty_label.setObjectName("emptyState")
-        self.empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.empty_label = EmptyState("empty_library.png", art_height=90)
         self.stack = QStackedWidget()
         for widget in (self.grid, self.meeting_list, self.empty_label):
             self.stack.addWidget(widget)
@@ -184,6 +208,9 @@ class PreviewPage(QWidget):
         self.splitter.setStretchFactor(0, 3)
         self.splitter.setStretchFactor(1, 2)
         layout.addWidget(self.splitter, 1)
+        self.top_hint = EmptyState("empty_library.png", "Explora y gestiona tus reuniones por organización.",
+                                   art_height=100)
+        layout.addWidget(self.top_hint)
         self.chat_button.toggled.connect(self.chat_panel.setVisible)
 
         self.grid.itemClicked.connect(self._enter)
@@ -241,6 +268,8 @@ class PreviewPage(QWidget):
     def refresh(self) -> None:
         self._drop_missing_levels()
         self._render_breadcrumb()
+        self.grid_title.setText(self._path[-1][2] if self._path else "Organizaciones")
+        self.top_hint.setVisible(not self._path)
         meetings = self.visible_meetings()
         if meetings is not None:
             self._show_meetings(meetings)
@@ -278,6 +307,8 @@ class PreviewPage(QWidget):
             if widget is not None:
                 widget.deleteLater()
         labels = self.breadcrumb_labels()
+        if len(labels) == 1:
+            return  # at the top level the card title already says "Organizaciones"
         for depth, label in enumerate(labels):
             if depth:
                 separator = QLabel("›")
@@ -292,8 +323,10 @@ class PreviewPage(QWidget):
             crumb.clicked.connect(lambda _checked=False, level=depth: self.go_to_level(level))
             self.breadcrumb_bar.addWidget(crumb)
 
-    def _card(self, label: str, count: int, meetings: list[dict], target: tuple[str, str | None, str]) -> None:
-        item = QListWidgetItem(QIcon(self._cover(meetings)), f"{label}\n{_count_label(count)}")
+    def _card(self, label: str, count: int, meetings: list[dict], target: tuple[str, str | None, str],
+              art: QPixmap | None = None) -> None:
+        cover = art if art is not None and not art.isNull() else self._cover(meetings)
+        item = QListWidgetItem(QIcon(cover), f"{label}\n{_count_label(count)}")
         item.setData(Qt.ItemDataRole.UserRole, target)
         item.setTextAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
         self.grid.addItem(item)
@@ -311,11 +344,13 @@ class PreviewPage(QWidget):
     def _show_organizations(self) -> None:
         self.grid.clear()
         vault = self.store.list_meetings(organization_id=None)
-        self._card(VAULT_LABEL, len(vault), vault, ("vault", None, VAULT_LABEL))
-        for organization in self.store.list_organizations():
+        # The top level is Astro's library: a chest for the Cofre, a folder per organization.
+        self._card(VAULT_LABEL, len(vault), vault, ("vault", None, VAULT_LABEL), room_pixmap(TILE_ART["vault"]))
+        for index, organization in enumerate(self.store.list_organizations()):
             meetings = self.store.list_meetings(organization_id=organization["id"])
+            folder = room_pixmap(TILE_ART["folders"][index % len(TILE_ART["folders"])])
             self._card(organization["name"], organization["meeting_count"], meetings,
-                       ("organization", organization["id"], organization["name"]))
+                       ("organization", organization["id"], organization["name"]), folder)
         self.stack.setCurrentWidget(self.grid)
         self.move_button.hide()
         self.chat_button.hide()
@@ -455,25 +490,15 @@ class AdminPage(QWidget):
         self.store = store
         self._icons = icons or {}
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(40, 28, 40, 28)
+        layout.setContentsMargins(32, 20, 32, 24)
         layout.setSpacing(14)
-        title = QLabel("Organización")
-        title.setObjectName("pageTitle")
-        layout.addWidget(title)
-        hint = QLabel(
-            "Las reuniones sin organización quedan en el Cofre de reuniones. "
-            "Eliminar una organización o un proyecto nunca elimina sus reuniones."
-        )
-        hint.setObjectName("fieldHint")
-        hint.setWordWrap(True)
-        layout.addWidget(hint)
-        self.summary = QLabel()
-        self.summary.setObjectName("adminSummary")
-        layout.addWidget(self.summary)
+        self.header = SectionHeader("Organización")
+        layout.addWidget(self.header)
+        layout.addWidget(self._build_stats_bar())
         columns = QHBoxLayout()
         columns.setSpacing(16)
         (organization_card, _title, self.organization_list, self.organization_empty,
-         organization_buttons) = self._column("Organizaciones", "Nueva")
+         organization_buttons) = self._column("Organizaciones", "Nueva", "folder", "tile_folder_planet.png")
         self.new_organization_button, self.rename_organization_button, self.delete_organization_button = (
             organization_buttons
         )
@@ -481,7 +506,7 @@ class AdminPage(QWidget):
             "Todavía no hay organizaciones. Crea la primera con «Nueva» para agrupar tus reuniones por cliente o área."
         )
         (project_card, self.project_title, self.project_list, self.project_empty,
-         project_buttons) = self._column("Proyectos", "Nuevo")
+         project_buttons) = self._column("Proyectos", "Nuevo", "layers", "empty_projects.png")
         self.new_project_button, self.rename_project_button, self.delete_project_button = project_buttons
         columns.addWidget(organization_card, 1)
         columns.addWidget(project_card, 1)
@@ -508,16 +533,50 @@ class AdminPage(QWidget):
     def show_error(self, message: str) -> None:
         QMessageBox.warning(self, "Administrar", message)
 
-    def _column(self, heading: str, new_label: str):
+    def _build_stats_bar(self) -> QFrame:
+        """The four counts of the planning room, each with its icon, in one bar."""
+        bar = QFrame()
+        bar.setObjectName("statsBar")
+        bar.setToolTip("Las reuniones sin organización quedan en el Cofre de reuniones. "
+                       "Eliminar una organización o un proyecto nunca elimina sus reuniones.")
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(22, 12, 22, 12)
+        row.setSpacing(14)
+        self.stat_labels: list[QLabel] = []
+        self.stat_icons: list[QLabel] = []
+        for index, (icon, color) in enumerate((("folder", None), ("layers", "#3EE6CF"), ("calendar", None),
+                                               ("archive", "#F7C948"))):
+            if index:
+                divider = QFrame()
+                divider.setObjectName("statDivider")
+                row.addWidget(divider)
+            picture = QLabel()
+            picture.setPixmap(_line_icon(icon, 22, color))
+            label = QLabel()
+            label.setObjectName("statText")
+            row.addWidget(picture)
+            row.addWidget(label, 1)
+            self.stat_icons.append(picture)
+            self.stat_labels.append(label)
+        return bar
+
+    def _column(self, heading: str, new_label: str, icon_name: str, empty_art: str):
         """A card with its title and actions on top, then the list or a hint when it is empty."""
         card = QFrame()
         card.setObjectName("card")
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(10)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(12)
+        title_row = QHBoxLayout()
+        title_row.setSpacing(10)
+        title_icon = QLabel()
+        title_icon.setPixmap(_line_icon(icon_name))
+        title_row.addWidget(title_icon)
         label = QLabel(heading)
         label.setObjectName("sectionTitle")
-        layout.addWidget(label)
+        title_row.addWidget(label, 1)
+        layout.addLayout(title_row)
+        layout.addWidget(_room_divider())
         header = QHBoxLayout()  # actions right under the title, above the list
         header.setSpacing(6)
         buttons = (QPushButton(new_label), QPushButton("Renombrar"), QPushButton("Eliminar"))
@@ -526,6 +585,8 @@ class AdminPage(QWidget):
             button.setObjectName(name)
             if icon in self._icons:
                 button.setIcon(QIcon(self._icons[icon]))
+            if icon == "delete":
+                button.setToolTip("Eliminar nunca elimina sus reuniones: vuelven al Cofre o a «Sin proyecto».")
             header.addWidget(button)
         header.addStretch(1)
         layout.addLayout(header)
@@ -534,10 +595,7 @@ class AdminPage(QWidget):
         items.setItemDelegate(_CountDelegate(items))
         items.setIconSize(QSize(16, 16))
         layout.addWidget(items, 1)
-        empty = QLabel()
-        empty.setObjectName("emptyState")
-        empty.setWordWrap(True)
-        empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        empty = EmptyState(empty_art, art_height=110)
         layout.addWidget(empty, 1)
         return card, label, items, empty, buttons
 
@@ -577,12 +635,14 @@ class AdminPage(QWidget):
         projects = sum(len(self.store.list_projects(org["id"])) for org in organizations)
         filed = sum(org["meeting_count"] for org in organizations)
         vault = len(self.store.list_meetings(organization_id=None))
-        self.summary.setText(" · ".join((
+        counts = (
             _plural(len(organizations), "organización", "organizaciones"),
             _plural(projects, "proyecto", "proyectos"),
             _plural(filed, "reunión en organizaciones", "reuniones en organizaciones"),
             f"{vault} en el Cofre de reuniones",
-        )))
+        )
+        for label, text in zip(self.stat_labels, counts):
+            label.setText(text)
         self._reload_projects(project_id)
 
     def _reload_projects(self, project_id: object = ANY) -> None:

@@ -35,7 +35,7 @@ class AppTests(unittest.TestCase):
             try:
                 window.show()
                 self.application.processEvents()
-                self.assertEqual(COLORS['accent'], '#46C7B5')
+                self.assertEqual(COLORS['accent'], '#3EE6CF')  # the redesign's teal
                 self.assertIn(COLORS['accent'], APP_STYLESHEET)
                 self.assertEqual(window.windowTitle(), 'AstroMeet')
                 self.assertFalse(window.windowIcon().isNull())
@@ -1925,6 +1925,143 @@ class WorkspaceLayoutTests(unittest.TestCase):
                 window.close()
 
 
+class RoomRedesignTests(unittest.TestCase):
+    """The "night room" redesign: every section is one of Astro's rooms, drawn with the mockups' pixel art."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.application = QApplication.instance() or QApplication([])
+
+    def _window(self, d):
+        window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False, ocr_enabled=False))
+        window.timer.stop()
+        window._show_error = mock.Mock(side_effect=AssertionError('no dialog expected'))
+        return window
+
+    def test_every_section_opens_with_its_room_header(self):
+        expected = {
+            'Grabar': ('La sala de comando de Astro', 'Captura, transcribe y convierte tus reuniones en conocimiento.'),
+            'Biblioteca': ('La biblioteca de Astro',
+                           'Explora reuniones, revisa sus momentos y conversa con la IA desde un mismo lugar.'),
+            'Organización': ('La sala de planificación',
+                             'Organiza tus reuniones por organización y proyecto, y mantén todo en orden.'),
+            'Mascota': ('La habitación de Astro', 'Configura cómo te acompaña Astro durante tus reuniones.'),
+        }
+        with tempfile.TemporaryDirectory() as d:
+            window = self._window(d)
+            try:
+                self.assertEqual(sorted(window.section_headers), sorted(expected))
+                for row in range(window.side_nav.count()):
+                    name = window.side_nav.item(row).text()
+                    window.side_nav.setCurrentRow(row)
+                    header = window.section_headers[name]
+                    self.assertTrue(window.pages.currentWidget().isAncestorOf(header), name)
+                    subtitle, description = expected[name]
+                    self.assertEqual(header.title.text(), name)
+                    self.assertEqual(header.subtitle.text(), f'✦ {subtitle}')
+                    self.assertEqual(header.description.text(), description)
+                    self.assertFalse(header.scene.isNull(), name)
+                    self.assertFalse(header.icon.pixmap().isNull(), name)
+            finally:
+                window.close()
+
+    def test_room_art_surrounds_the_sections(self):
+        with tempfile.TemporaryDirectory() as d:
+            window = self._window(d)
+            try:
+                self.assertFalse(window.pages.left_art.isNull())
+                self.assertFalse(window.pages.right_art.isNull())
+                self.assertFalse(window.side_rail.lantern.isNull())
+                window.resize(1280, 800)
+                self.assertFalse(window.grab().isNull())  # painting the room never fails
+            finally:
+                window.close()
+
+    def test_missing_room_art_never_breaks_a_section(self):
+        from teams_lite import room
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as empty, \
+             mock.patch.object(room, 'ROOM_DIR', Path(empty)):
+            room.room_pixmap.cache_clear()
+            try:
+                window = self._window(d)
+                try:
+                    header = window.section_headers['Grabar']
+                    self.assertTrue(header.scene.isNull())
+                    self.assertEqual(header.title.text(), 'Grabar')
+                    self.assertFalse(window.grab().isNull())
+                finally:
+                    window.close()
+            finally:
+                room.room_pixmap.cache_clear()
+
+    def test_recording_room_empty_states_and_see_all(self):
+        with tempfile.TemporaryDirectory() as d:
+            window = self._window(d)
+            try:
+                self.assertEqual(window.history_empty.text(), 'Todavía no hay grabaciones en este proyecto.')
+                self.assertEqual(window.history_empty.hint.text(), 'Inicia una grabación para que aparezca aquí.')
+                self.assertFalse(window.history_empty.art.pixmap().isNull())
+                self.assertEqual(window.transcript_placeholder.text(), 'Selecciona una reunión para ver su transcripción.')
+                self.assertFalse(window.transcript_placeholder.art.pixmap().isNull())
+                self.assertEqual(window.see_all_button.text(), 'Ver todas →')
+                window.see_all_button.click()
+                self.assertIs(window.pages.currentWidget(), window.preview_page)
+                self.assertEqual(window.side_nav.currentRow(), 1)
+            finally:
+                window.close()
+
+    def test_library_room_shows_organization_tiles_and_its_hint(self):
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            zenith = storage.create_organization('Zenith')
+            storage.create_meeting('Kickoff', organization_id=zenith)
+            window = self._window(d)
+            try:
+                page = window.preview_page
+                page.refresh()
+                self.assertEqual(page.grid_title.text(), 'Organizaciones')
+                self.assertEqual(page.top_hint.text(), 'Explora y gestiona tus reuniones por organización.')
+                self.assertFalse(page.top_hint.isHidden())
+                self.assertFalse(page.top_hint.art.pixmap().isNull())
+                tiles = [page.grid.item(row) for row in range(page.grid.count())]
+                self.assertEqual([tile.text() for tile in tiles], ['Cofre de reuniones\n0 reuniones', 'Zenith\n1 reunión'])
+                self.assertTrue(all(not tile.icon().isNull() for tile in tiles))
+                page.grid.itemClicked.emit(tiles[1])
+                self.assertTrue(page.top_hint.isHidden())  # inside an organization the hint gives way to its projects
+            finally:
+                window.close()
+
+    def test_organization_room_shows_a_stats_bar(self):
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            storage.create_meeting('Suelta')
+            window = self._window(d)
+            try:
+                admin = window.admin_page
+                self.assertEqual([label.text() for label in admin.stat_labels],
+                                 ['0 organizaciones', '0 proyectos', '0 reuniones en organizaciones',
+                                  '1 en el Cofre de reuniones'])
+                self.assertTrue(all(not icon.pixmap().isNull() for icon in admin.stat_icons))
+                self.assertFalse(admin.project_empty.isHidden())
+                self.assertEqual(admin.project_empty.text(), 'Elige una organización para ver y crear sus proyectos.')
+                self.assertFalse(admin.project_empty.art.pixmap().isNull())
+            finally:
+                window.close()
+
+    def test_mascot_room_explains_and_gives_the_tip(self):
+        with tempfile.TemporaryDirectory() as d:
+            window = self._window(d)
+            try:
+                page = window.mascot_page
+                self.assertEqual(page.explanation.text(),
+                                 'Astro flota sobre Teams y muestra lo que pasa: grabando, capturando, procesando '
+                                 'o si algo falló.')
+                self.assertEqual(page.tip_text.text(),
+                                 'Tip: haz clic en Astro para desplegar sus acciones: Grabar, Detener, Capturar y OCR.')
+            finally:
+                window.close()
+
+
 class OrganizationSectionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -1944,8 +2081,9 @@ class OrganizationSectionTests(unittest.TestCase):
                 self.assertFalse(admin.project_empty.isHidden())
                 self.assertIn('Elige una organización', admin.project_empty.text())
                 self.assertEqual(admin.project_title.text(), 'Proyectos')
-                self.assertEqual(admin.summary.text(),
-                                 '0 organizaciones · 0 proyectos · 0 reuniones en organizaciones · 1 en el Cofre de reuniones')
+                self.assertEqual([label.text() for label in admin.stat_labels],
+                                 ['0 organizaciones', '0 proyectos', '0 reuniones en organizaciones',
+                                  '1 en el Cofre de reuniones'])
                 for button in (admin.new_organization_button, admin.rename_organization_button,
                                admin.delete_organization_button, admin.new_project_button,
                                admin.rename_project_button, admin.delete_project_button):
@@ -1963,8 +2101,9 @@ class OrganizationSectionTests(unittest.TestCase):
                 self.assertEqual(names, ['Acme', 'Zenith'])
                 self.assertEqual(admin.organization_list.item(1).data(COUNT_ROLE), 2)
                 self.assertFalse(admin.organization_list.item(1).icon().isNull())
-                self.assertEqual(admin.summary.text(),
-                                 '2 organizaciones · 1 proyecto · 2 reuniones en organizaciones · 1 en el Cofre de reuniones')
+                self.assertEqual([label.text() for label in admin.stat_labels],
+                                 ['2 organizaciones', '1 proyecto', '2 reuniones en organizaciones',
+                                  '1 en el Cofre de reuniones'])
 
                 admin.organization_list.setCurrentRow(1)
                 self.assertEqual(admin.project_title.text(), 'Proyectos de Zenith')
