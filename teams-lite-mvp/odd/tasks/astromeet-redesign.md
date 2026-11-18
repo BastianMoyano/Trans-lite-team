@@ -1,0 +1,33 @@
+# AstroMeet — "night room" redesign
+Objective: restyle the desktop app after the user's mockups (purple night theme, pixel-art scene per section) and preview the chosen mascot in the Mascota section, without changing what the app does.
+Branch: feat/astromeet-redesign (from main bfcf1b4) · Delivery: ask-on-risk · Test runner: `.venv\Scripts\python -m unittest discover -s tests` (from teams-lite-mvp)
+
+## Specs
+- S1: "en la seccion de mascosta si selesillo a brasa o astro debe mostrar en mascota donde sale la img en pixel, de la mascota antigua como un previsualizador" — the Mascota section previews the selected character's pixel art (idle animation, sharp pixels) and updates when Astro or Brasa is chosen; still with motion off, no animation work while hidden.
+- S2: "este es el rediseño de la apps" (overview mockup of the four sections) + "si rediseña" + "ahi estan las imagenes que necesitas" (four 1672x941 mockups: Grabar, Biblioteca, Organización, Mascota). Shared shell: dark indigo/purple theme, purple-bordered rounded cards, teal primary buttons and active nav item, gold subtitles, sidebar with AstroMeet logo + "Tu compañero inteligente de reuniones", nav Grabar / Biblioteca / Organización / Mascota with outline icons, "v0.6.0 · datos locales" footer, pixel-art lantern and plants at the sidebar's bottom, plants/books/sleeping Brasa decorations at the content's bottom corners.
+- S3: each section opens with a header: icon, title, gold subtitle with "✦", description, and a pixel-art scene on the right. Verbatim:
+  - Grabar — "La sala de comando de Astro" — "Captura, transcribe y convierte tus reuniones en conocimiento."
+  - Biblioteca — "La biblioteca de Astro" — "Explora reuniones, revisa sus momentos y conversa con la IA desde un mismo lugar."
+  - Organización — "La sala de planificación" — "Organiza tus reuniones por organización y proyecto, y mantén todo en orden."
+  - Mascota — "La habitación de Astro" — "Configura cómo te acompaña Astro durante tus reuniones."
+- S4: Grabar: "Nueva grabación" and "Transcripción" cards side by side, "Grabaciones recientes" below with "Ver todas →"; empty states "Selecciona una reunión para ver su transcripción." and "Todavía no hay grabaciones en este proyecto." / "Inicia una grabación para que aparezca aquí." with their illustrations.
+- S5: Biblioteca: "Organizaciones" card with "Importar..." and tiles "Cofre de reuniones" (chest) and one per organization (folder) with "N reuniones" / "1 reunión"; empty hint "Explora y gestiona tus reuniones por organización."
+- S6: Organización: stats bar "N organizaciones | N proyectos | N reuniones en organizaciones | N en el Cofre de reuniones"; "Organizaciones" and "Proyectos" cards with "+ Nueva"/"+ Nuevo", "Renombrar", "Eliminar"; rows with "1 reunión"; projects empty state "Elige una organización para ver y crear sus proyectos."
+- S7: Mascota: "Grabación rápida" and "Astro" cards on the left, "¿Cómo funciona?" card (with the S1 preview) and the tip "Tip: haz clic en Astro para desplegar sus acciones: Grabar, Detener, Capturar y OCR." on the right.
+- Assumption: the pixel art is cropped from the supplied mockups into package assets (feathered edges so it blends into the theme); a missing image never breaks a section (it is simply not drawn). Behaviour, data and existing controls stay as they are; only the presentation changes.
+
+## Tasks
+- T1 [S1] inline — Mascota preview widget — done 477ee3c, RED (no `preview`) → GREEN; suite 244 OK; offscreen capture with Astro and Brasa
+- T2 [S2,S3] inline — art assets cropped from the mockups + packaging — done 8bb4ec8; 19 PNGs in assets/room (1.4 MB): scenes/decor feathered, small art keyed ("colour to alpha"); packaging test pins them (spec already bundles assets/)
+- T3 [S2,S3] inline — theme, sidebar, section header, corner decorations — done 87cfad5; room.py (SectionHeader, RoomStack, SideRail, EmptyState); palette remapped in COLORS/stylesheet (mascot window styles untouched); nav outline icons lavender → teal when selected
+- T4 [S4] inline — Grabar layout and empty states — done 87cfad5; header with state pill, card title icons, illustrated empty states, "Ver todas →" opens Biblioteca
+- T5 [S5] inline — Biblioteca organization tiles — done 87cfad5; "Organizaciones" card, chest/folder tiles at top level, hint with books, outlined Importar…
+- T6 [S6] inline — Organización stats bar and cards — done 87cfad5; four-segment stats bar (deletion note moved to its tooltip and the Eliminar tooltips), bordered rows, clipboard empty state
+- T7 [S7] inline — Mascota header and tip — done 87cfad5; verbatim explanation and tip, gold tip card with bulb (full click details in its tooltip)
+- T8 [S2] inline — README — done 87cfad5
+
+## Log
+- L1 (2026-11-18): "tengo una actualizaciones que debemos hacer a la app, en la seccion de mascosta si selesillo a brasa o astro debe mostrar en mascota donde sale la img en pixel, de la mascota antigua como un previsualizador, [Image #3] este es el rediseño de la apps"
+- L2 (2026-11-18): T1 delivered first; asked whether to redesign the other sections. "ese si fue como papá aajaja, si rediseña". Asked for the art source; answer: "ahi estan las imagenes que necesitas" with the four section mockups.
+- L3: Route: inline for every task (one coherent restyle in shared files app.py/library_ui.py/mascot_ui.py; no writer reason: units share the stylesheet and shell). Palette sampled from the mockups: page #0E0F3A, sidebar #060E2A, card #131642 / border #4A4F8E, teal #3EE6CF (active nav bg #063B42), gold #F7C948, text #EEF0FF, muted #A9AFD6.
+- L4: RED: 8 errors + 1 failure in the new/changed tests (no room module, section_headers, stat_labels, grid_title, explanation; accent pinned to the old teal) → GREEN; full suite 252 OK. Changed tests: accent #46C7B5 → #3EE6CF; Organización summary string → four stat labels (the mockup splits it). Offscreen 1x captures of the four sections compared with the mockups; fixed scene overlapping the description (scene now starts where the texts end, left edge faded), dark box behind keyed icons (noise floor), header growing on short sections (fixed 150 px), redundant top-level breadcrumb.
