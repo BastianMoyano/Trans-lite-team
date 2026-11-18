@@ -79,9 +79,10 @@ from .chat_ui import ChatPanel
 from .minutes import CLI_LABELS, MinutesError, generate_minutes, load_minutes
 from .previews import meeting_screenshots
 from .mascot import load_mascot_settings, resolve_placement, save_mascot_settings
-from .astro import AstroMachine
+from .astro import AstroMachine, AstroState
 from .astro_sprites import load_animations
 from .mascot_ui import MascotSettingsPage, MascotWidget
+from .room import EmptyState, RoomStack, SectionHeader, SideRail
 from .moments import capture_moment, format_offset, load_moments, moments_for_minutes
 from .ocr import load_participants, merge_participants, read_teams_names
 from .sharing import PackageError, export_meeting, import_meeting, read_package, suggest_placement
@@ -94,18 +95,18 @@ from .window_capture import FrameSampler, TeamsWindowUnavailable, capture_teams_
 
 
 COLORS = {
-    "background": "#17191C",
-    "surface": "#20242A",
-    "surface_raised": "#292F37",
-    "border": "#3A424C",
-    "text": "#F3F5F7",
-    "text_soft": "#C7D0D9",
-    "text_muted": "#929EAC",
-    "text_subtle": "#697684",
-    "accent": "#46C7B5",
-    "accent_hover": "#5AD7C5",
-    "accent_soft": "#173C3A",
-    "focus": "#8BE0D2",
+    "background": "#0E0F3A",
+    "surface": "#141743",
+    "surface_raised": "#1E2156",
+    "border": "#3D4385",
+    "text": "#EEF0FF",
+    "text_soft": "#CDD2F0",
+    "text_muted": "#A9AFD6",
+    "text_subtle": "#7D84B8",
+    "accent": "#3EE6CF",
+    "accent_hover": "#63EEDB",
+    "accent_soft": "#063B42",
+    "focus": "#8BF5E8",
     "success": "#63D69A",
     "warning": "#F5B544",
     "danger": "#F87171",
@@ -114,41 +115,95 @@ COLORS = {
 PRODUCT_NAME = "AstroMeet"
 PRODUCT_TAGLINE = "Tu compañero inteligente de reuniones"
 BRAND_ICON = Path(__file__).resolve().parent / "assets" / "branding" / "astromeet-icon.png"
+NAV_ICON_COLOR = "#B9A4FF"  # lavender outline icons; the selected section turns teal
 
 APP_STYLESHEET = """
-QMainWindow, QScrollArea#pageScroll, QWidget#pageContent {
-    background: #17191C;
-    color: #F3F5F7;
+QMainWindow {
+    background: #0E0F3A;
+    color: #EEF0FF;
+}
+QScrollArea#pageScroll, QWidget#pageViewport, QWidget#pageContent {
+    background: transparent;
+    color: #EEF0FF;
 }
 QLabel {
-    color: #F3F5F7;
+    color: #EEF0FF;
     background: transparent;
 }
 QLabel#eyebrow {
-    color: #46C7B5;
+    color: #3EE6CF;
     font-size: 12px;
 }
 QLabel#pageTitle {
-    color: #F3F5F7;
-    font-size: 20px;
+    color: #FFFFFF;
+    font-size: 28px;
     font-weight: 700;
 }
+QLabel#roomSubtitle {
+    color: #F7C948;
+    font-size: 16px;
+    font-weight: 700;
+}
+QLabel#roomDescription {
+    color: #CDD2F0;
+    font-size: 13px;
+}
 QFrame#appMark {
-    background: #173C3A;
-    border: 1px solid #46C7B5;
+    background: #063B42;
+    border: 1px solid #3EE6CF;
     border-radius: 8px;
 }
 QFrame#sideRail {
-    background: #121619;
-    border-right: 1px solid #3A424C;
+    background: #060E2A;
+    border-right: 1px solid #1E2456;
+}
+QFrame#statsBar {
+    background: rgba(9, 27, 69, 225);
+    border: 1px solid #2FB8B0;
+    border-radius: 14px;
+}
+QLabel#statText {
+    color: #EEF0FF;
+    font-size: 14px;
+}
+QFrame#statDivider {
+    background: #3D4385;
+    max-width: 1px;
+    min-width: 1px;
+    border: none;
+}
+QFrame#tipCard {
+    background: rgba(40, 30, 40, 200);
+    border: 1px solid #F7C948;
+    border-radius: 16px;
+}
+QLabel#tipText {
+    color: #F3E7C4;
+    font-size: 13px;
+}
+QLabel#emptyHint {
+    color: #A9AFD6;
+    font-size: 12px;
+}
+QPushButton#linkButton {
+    min-height: 28px;
+    padding: 0 6px;
+    border: none;
+    background: transparent;
+    color: #3EE6CF;
+    font-size: 13px;
+    font-weight: 700;
+}
+QPushButton#linkButton:hover {
+    color: #8BF5E8;
 }
 QLabel#brandTitle {
-    color: #F3F5F7;
+    color: #EEF0FF;
     font-size: 15px;
     font-weight: 700;
 }
 QLabel#brandTagline, QLabel#sideFooter {
-    color: #697684;
+    color: #7D84B8;
     font-size: 11px;
 }
 QLabel#statePill {
@@ -186,23 +241,27 @@ QLabel#updateText {
     font-size: 13px;
 }
 QFrame#card {
-    background: #20242A;
-    border: 1px solid #3A424C;
-    border-radius: 12px;
+    background: rgba(18, 21, 62, 230);
+    border: 1px solid #4A4F8E;
+    border-radius: 16px;
 }
 QLabel#sectionTitle {
-    color: #F3F5F7;
-    font-size: 16px;
-    font-weight: 600;
+    color: #FFFFFF;
+    font-size: 17px;
+    font-weight: 700;
 }
-QLabel#adminSummary {
-    padding: 8px 12px;
-    background: #172A2A;
-    border: 1px solid #23413E;
-    border-radius: 8px;
-    color: #9EE6DA;
-    font-size: 12px;
-    font-weight: 600;
+QPushButton#outlineButton {
+    min-height: 36px;
+    padding: 0 16px;
+    border: 1px solid #3EE6CF;
+    border-radius: 10px;
+    background: rgba(6, 59, 66, 160);
+    color: #EEF0FF;
+    font-size: 13px;
+    font-weight: 700;
+}
+QPushButton#outlineButton:hover {
+    background: #063B42;
 }
 QPushButton#astroRecord, QPushButton#astroAction {
     min-height: 32px;
@@ -242,16 +301,16 @@ QLabel#mascotTimer {
     font-weight: 600;
 }
 QLabel#historyScope {
-    color: #46C7B5;
+    color: #3EE6CF;
     font-size: 12px;
     font-weight: 600;
 }
 QLabel#sectionMeta, QLabel#fieldHint, QLabel#statusText {
-    color: #929EAC;
+    color: #A9AFD6;
     font-size: 12px;
 }
 QFrame#divider {
-    background: #3A424C;
+    background: #3D4385;
     max-height: 1px;
     min-height: 1px;
     border: none;
@@ -259,46 +318,47 @@ QFrame#divider {
 QLineEdit {
     min-height: 42px;
     padding: 0 12px;
-    background: #17191C;
-    border: 1px solid #3A424C;
+    background: #0A1030;
+    border: 1px solid #2C3366;
     border-radius: 8px;
-    color: #F3F5F7;
+    color: #EEF0FF;
     font-size: 14px;
-    selection-background-color: #3B3B3B;
+    selection-background-color: #2E3470;
 }
 QLineEdit:focus {
-    border: 2px solid #8BE0D2;
+    border: 2px solid #8BF5E8;
 }
 QPushButton {
     min-height: 42px;
     padding: 0 18px;
     border-radius: 8px;
-    border: 1px solid #3A424C;
-    background: #20242A;
-    color: #F3F5F7;
+    border: 1px solid #3D4385;
+    background: #141743;
+    color: #EEF0FF;
     font-size: 14px;
 }
 QPushButton:hover {
-    background: #292F37;
-    border-color: #53606D;
+    background: #1E2156;
+    border-color: #5A62A8;
 }
 QPushButton:pressed {
-    background: #173C3A;
+    background: #063B42;
 }
 QPushButton:disabled {
-    color: #6B6B6B;
-    background: #171717;
-    border-color: #262626;
+    color: #6E74A6;
+    background: #10123A;
+    border-color: #23285A;
 }
 QPushButton#primaryButton {
-    background: #46C7B5;
-    border-color: #46C7B5;
-    color: #10201E;
-    font-weight: 600;
+    background: #3EE6CF;
+    border-color: #3EE6CF;
+    border-radius: 10px;
+    color: #062A2E;
+    font-weight: 700;
 }
 QPushButton#primaryButton:hover {
-    background: #5AD7C5;
-    border-color: #5AD7C5;
+    background: #63EEDB;
+    border-color: #63EEDB;
 }
 QPushButton#dangerButton:enabled {
     background: #2A1515;
@@ -313,24 +373,24 @@ QPushButton#ghostButton, QPushButton#deleteButton {
     padding: 0 10px;
     border: none;
     background: transparent;
-    color: #C7D0D9;
+    color: #CDD2F0;
     font-size: 13px;
 }
 QPushButton#deleteButton {
     color: #F87171;
 }
 QPushButton#ghostButton:hover:enabled {
-    background: #292F37;
+    background: #1E2156;
 }
 QPushButton#deleteButton:hover:enabled {
     background: #2A1515;
 }
 QPushButton#ghostButton:disabled, QPushButton#deleteButton:disabled {
     background: transparent;
-    color: #5A5A5A;
+    color: #5A5F92;
 }
 QCheckBox {
-    color: #C7D0D9;
+    color: #CDD2F0;
     spacing: 8px;
     font-size: 13px;
 }
@@ -350,92 +410,100 @@ QLabel#statusBadge[tone="interrupted"] {
     color: #F5B544;
 }
 QLabel#meetingTitle {
-    color: #EDEDED;
+    color: #EEF0FF;
     font-size: 13px;
     font-weight: 600;
 }
 QLabel#meetingDate {
-    color: #8F8F8F;
+    color: #9AA0CC;
     font-size: 12px;
 }
 QLabel#meetingId, QLabel#monoMuted {
-    color: #8F8F8F;
+    color: #9AA0CC;
     font-family: "{mono_family}";
     font-size: 11px;
 }
 QTableWidget {
     background: transparent;
     border: none;
-    color: #EDEDED;
+    color: #EEF0FF;
     outline: none;
 }
 QTableWidget#meetingList::item {
     border-left: 2px solid transparent;
 }
 QTableWidget#meetingList::item:selected {
-    background: #173C3A;
-    border-left: 3px solid #46C7B5;
+    background: #063B42;
+    border-left: 3px solid #3EE6CF;
 }
 QTableWidget#meetingList::item:hover:!selected {
-    background: #1F1F1F;
+    background: #181B4A;
 }
 QTableWidget#transcriptTable::item {
     padding: 10px 6px;
-    border-bottom: 1px solid #242424;
+    border-bottom: 1px solid #22265A;
 }
 QTableWidget#transcriptTable::item:selected {
-    background: #232323;
-    color: #EDEDED;
+    background: #1C2052;
+    color: #EEF0FF;
 }
 QListWidget#sideNav {
     background: transparent;
     border: none;
     padding: 8px 0;
-    color: #C7D0D9;
+    color: #CDD2F0;
     font-size: 14px;
     outline: none;
 }
 QListWidget#sideNav::item {
+    margin: 2px 0;
     padding: 0 12px;
-    border-radius: 8px;
-    border-left: 3px solid transparent;
+    border-radius: 10px;
+    border: 1px solid transparent;
 }
 QListWidget#sideNav::item:selected {
-    background: #173C3A;
-    color: #F3F5F7;
-    border-left: 3px solid #46C7B5;
-    font-weight: 600;
+    background: #063B42;
+    color: #FFFFFF;
+    border: 1px solid #40F2E2;
+    font-weight: 700;
 }
 QListWidget#sideNav::item:hover:!selected {
-    background: #20242A;
+    background: #141743;
 }
 QListWidget#previewGrid, QListWidget#previewMeetings, QListWidget#adminList {
     background: transparent;
     border: none;
-    color: #EDEDED;
+    color: #EEF0FF;
     font-size: 13px;
     outline: none;
 }
 QListWidget#previewGrid::item {
     padding: 10px;
-    border: 1px solid #2E2E2E;
-    border-radius: 10px;
-    background: #1A1A1A;
+    border: 1px solid #4A4F8E;
+    border-radius: 14px;
+    background: rgba(20, 23, 70, 230);
 }
 QListWidget#previewGrid::item:hover {
-    background: #232323;
-    border-color: #3A3A3A;
+    background: #1C2052;
+    border-color: #8C7BEA;
 }
-QListWidget#previewMeetings::item, QListWidget#adminList::item {
+QListWidget#previewMeetings::item {
     padding: 6px 8px;
     border-radius: 8px;
 }
+QListWidget#adminList::item {
+    margin: 3px 0;
+    padding: 10px 10px;
+    border: 1px solid #2C3166;
+    border-radius: 10px;
+    background: rgba(12, 16, 50, 160);
+}
 QListWidget#previewMeetings::item:selected, QListWidget#adminList::item:selected {
-    background: #232323;
-    color: #EDEDED;
+    background: #1C2052;
+    color: #EEF0FF;
 }
 QListWidget#previewMeetings::item:hover:!selected, QListWidget#adminList::item:hover:!selected {
-    background: #1F1F1F;
+    background: #181B4A;
 }
 QPushButton#iconButton {
     min-width: 36px;
@@ -445,7 +513,7 @@ QPushButton#iconButton {
     background: transparent;
 }
 QPushButton#iconButton:hover {
-    background: #232323;
+    background: #1C2052;
 }
 QPushButton#iconButton:disabled {
     background: transparent;
@@ -455,20 +523,20 @@ QPushButton#crumb {
     padding: 0 6px;
     border: none;
     background: transparent;
-    color: #8F8F8F;
+    color: #9AA0CC;
     font-size: 13px;
 }
 QPushButton#crumb:hover {
-    color: #EDEDED;
+    color: #EEF0FF;
 }
 QPushButton#crumb:disabled {
-    color: #EDEDED;
+    color: #EEF0FF;
     background: transparent;
     font-weight: 600;
 }
 QLabel#emptyState {
-    color: #6B6B6B;
-    font-size: 13px;
+    color: #DADDF5;
+    font-size: 15px;
 }
 QScrollBar:vertical {
     width: 10px;
@@ -477,11 +545,11 @@ QScrollBar:vertical {
 }
 QScrollBar::handle:vertical {
     min-height: 32px;
-    background: #3A3A3A;
+    background: #3A3F7A;
     border-radius: 3px;
 }
 QScrollBar::handle:vertical:hover {
-    background: #4A4A4A;
+    background: #4C5296;
 }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
@@ -489,90 +557,90 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
     background: transparent;
 }
 QMessageBox {
-    background: #1A1A1A;
+    background: #12153F;
 }
 QPushButton#segmentButton {
     min-height: 30px;
     padding: 0 14px;
-    border: 1px solid #3A424C;
+    border: 1px solid #3D4385;
     border-radius: 6px;
     background: transparent;
-    color: #929EAC;
+    color: #A9AFD6;
     font-size: 13px;
 }
 QPushButton#segmentButton:checked {
-    background: #173C3A;
-    border-color: #46C7B5;
-    color: #8BE0D2;
+    background: #063B42;
+    border-color: #3EE6CF;
+    color: #8BF5E8;
     font-weight: 600;
 }
 QPushButton#segmentButton:hover:!checked {
-    color: #D4D4D4;
+    color: #DADDF5;
 }
 QPushButton#minutesButton {
     min-height: 32px;
     padding: 0 14px;
-    border: 1px solid #46C7B5;
+    border: 1px solid #3EE6CF;
     border-radius: 6px;
-    background: #46C7B5;
-    color: #10201E;
+    background: #3EE6CF;
+    color: #062A2E;
     font-weight: 600;
     font-size: 13px;
 }
 QPushButton#minutesButton:hover:enabled {
-    background: #5AD7C5;
+    background: #63EEDB;
 }
 QPushButton#minutesButton:disabled {
-    background: #232323;
-    border-color: #2E2E2E;
-    color: #6B6B6B;
+    background: #1C2052;
+    border-color: #2C3166;
+    color: #6E74A6;
 }
 QComboBox {
     min-height: 32px;
     padding: 0 10px;
-    border: 1px solid #3A3A3A;
+    border: 1px solid #3A3F7A;
     border-radius: 6px;
-    background: #141414;
-    color: #EDEDED;
+    background: #0A1030;
+    color: #EEF0FF;
     font-size: 13px;
 }
 QComboBox:disabled {
-    color: #6B6B6B;
+    color: #6E74A6;
 }
 QComboBox QAbstractItemView {
-    background: #1A1A1A;
-    border: 1px solid #3A3A3A;
-    color: #EDEDED;
-    selection-background-color: #2A2A2A;
+    background: #12153F;
+    border: 1px solid #3A3F7A;
+    color: #EEF0FF;
+    selection-background-color: #262B62;
 }
 QTextBrowser#minutesView {
     background: transparent;
     border: none;
-    color: #EDEDED;
+    color: #EEF0FF;
     font-size: 13px;
 }
 QTextBrowser#chatHistory {
-    background: #17191C;
-    border: 1px solid #3A424C;
+    background: #0E0F3A;
+    border: 1px solid #3D4385;
     border-radius: 8px;
     padding: 8px;
-    color: #F3F5F7;
+    color: #EEF0FF;
     font-size: 13px;
 }
 QPushButton#ghostButton:checked {
-    background: #173C3A;
-    border: 1px solid #46C7B5;
-    color: #8BE0D2;
+    background: #063B42;
+    border: 1px solid #3EE6CF;
+    color: #8BF5E8;
 }
 """
 
 MINUTES_DOCUMENT_CSS = """
 h1 { font-size: 20px; font-weight: 700; margin: 4px 0 10px 0; }
-h2 { font-size: 15px; font-weight: 600; margin: 16px 0 6px 0; color: #EDEDED; }
-p, li { color: #D4D4D4; }
+h2 { font-size: 15px; font-weight: 600; margin: 16px 0 6px 0; color: #EEF0FF; }
+p, li { color: #DADDF5; }
 table { border-collapse: collapse; margin: 6px 0; }
-th { background: #232323; color: #EDEDED; padding: 6px 10px; border: 1px solid #3A3A3A; }
-td { color: #D4D4D4; padding: 6px 10px; border: 1px solid #2E2E2E; }
+th { background: #1C2052; color: #EEF0FF; padding: 6px 10px; border: 1px solid #3A3F7A; }
+td { color: #DADDF5; padding: 6px 10px; border: 1px solid #2C3166; }
 """
 _CLI_LABELS = CLI_LABELS
 
@@ -613,6 +681,35 @@ _ICON_PATHS = {
         '<line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/>'
     ),
     "plus": '<path d="M12 5v14"/><path d="M5 12h14"/>',
+    "video": (
+        '<path d="m16 13 5.2 3.5a.5.5 0 0 0 .8-.4V7.9a.5.5 0 0 0-.8-.4L16 10.5"/>'
+        '<rect x="2" y="6" width="14" height="12" rx="2"/>'
+    ),
+    "book": (
+        '<path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 '
+        '1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/>'
+    ),
+    "network": (
+        '<rect x="16" y="16" width="6" height="6" rx="1"/><rect x="2" y="16" width="6" height="6" rx="1"/>'
+        '<rect x="9" y="2" width="6" height="6" rx="1"/><path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"/>'
+        '<path d="M12 12V8"/>'
+    ),
+    "cat": (
+        '<path d="M12 5c.67 0 1.35.09 2 .26 1.78-2 5.03-2.84 6.42-2.26 1.4.58-.42 7-.42 7 .57 1.07 1 2.24 1 3.44'
+        'C21 17.9 16.97 21 12 21s-9-3-9-7.56c0-1.25.5-2.4 1-3.44 0 0-1.89-6.42-.5-7 1.39-.58 4.72.23 6.5 2.23'
+        'A9.04 9.04 0 0 1 12 5Z"/><path d="M8 14v.5"/><path d="M16 14v.5"/>'
+    ),
+    "calendar": (
+        '<rect width="18" height="18" x="3" y="4" rx="2"/><path d="M16 2v4"/><path d="M8 2v4"/><path d="M3 10h18"/>'
+    ),
+    "archive": (
+        '<rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/>'
+        '<path d="M10 12h4"/>'
+    ),
+    "clock": '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+    "zap": '<path d="M13 2 4 14h7l-1 8 9-12h-7z"/>',
+    "sparkle": '<path d="M12 3l1.9 5.6L19.5 10.5l-5.6 1.9L12 18l-1.9-5.6L4.5 10.5l5.6-1.9z"/>',
+    "list": '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8"/><path d="M8 12h8"/><path d="M8 16h5"/>',
     "layers": (
         '<polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/>'
         '<polyline points="2 12 12 17 22 12"/>'
@@ -718,23 +815,23 @@ QCheckBox::indicator {
     width: 16px;
     height: 16px;
     border-radius: 4px;
-    border: 1px solid #53606D;
-    background: #17191C;
+    border: 1px solid #5A62A8;
+    background: #0E0F3A;
 }
 QCheckBox::indicator:hover {
-    border-color: #8BE0D2;
+    border-color: #8BF5E8;
 }
 QCheckBox::indicator:checked {
-    background: #46C7B5;
-    border-color: #46C7B5;
+    background: #3EE6CF;
+    border-color: #3EE6CF;
     %s
 }
 QCheckBox::indicator:disabled {
-    border-color: #2E2E2E;
-    background: #1A1A1A;
+    border-color: #2C3166;
+    background: #12153F;
 }
 """
-    check_svg = _SVG_TEMPLATE.format(fill="none", stroke="#10201E", body='<path d="M5 12.5l4.5 4.5L19 7.5"/>')
+    check_svg = _SVG_TEMPLATE.format(fill="none", stroke="#062A2E", body='<path d="M5 12.5l4.5 4.5L19 7.5"/>')
     try:
         path = Path(tempfile.gettempdir()) / "teams-lite-ui" / "check.svg"
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1019,12 +1116,13 @@ class MainWindow(QMainWindow):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.viewport().setObjectName("pageViewport")  # transparent: the room is painted behind it
         content = QWidget()
         content.setObjectName("pageContent")
         layout = QVBoxLayout(content)
         layout.setContentsMargins(40, 28, 40, 28)
         layout.setSpacing(18)
-        layout.addLayout(self._build_header())
+        layout.addWidget(self._build_header())
         layout.addWidget(self._build_update_banner())
         layout.addWidget(self._build_notice())
         # Two halves: recording and recent recordings on the left, the transcript over the
@@ -1053,27 +1151,36 @@ class MainWindow(QMainWindow):
         self.admin_page = self._build_admin_page()
         self.mascot_page = self._build_mascot()
 
-        self.pages = QStackedWidget()
+        self.pages = RoomStack()
         self.side_nav = QListWidget()
         self.side_nav.setObjectName("sideNav")
         self.side_nav.setFrameShape(QFrame.Shape.NoFrame)
-        self.side_nav.setIconSize(QSize(16, 16))
+        self.side_nav.setIconSize(QSize(20, 20))
         for label, icon, page in (
-            ("Grabar", "app", self.recording_page),
-            ("Biblioteca", "image", self.preview_page),
-            ("Organización", "folder", self.admin_page),
-            ("Mascota", "smile", self.mascot_page),
+            ("Grabar", "video", self.recording_page),
+            ("Biblioteca", "book", self.preview_page),
+            ("Organización", "network", self.admin_page),
+            ("Mascota", "cat", self.mascot_page),
         ):
-            item = QListWidgetItem(QIcon(_render_svg(icon, COLORS["accent"], 16)), label)
-            item.setSizeHint(QSize(0, 44))
+            nav_icon = QIcon()
+            nav_icon.addPixmap(_render_svg(icon, NAV_ICON_COLOR, 20), QIcon.Mode.Normal)
+            nav_icon.addPixmap(_render_svg(icon, COLORS["accent"], 20), QIcon.Mode.Selected)
+            item = QListWidgetItem(nav_icon, label)
+            item.setSizeHint(QSize(0, 48))
             self.side_nav.addItem(item)
             self.pages.addWidget(page)
         self.side_nav.currentRowChanged.connect(self._show_section)
         self.side_nav.setCurrentRow(0)
+        self.section_headers = {
+            "Grabar": self.recording_header,
+            "Biblioteca": self.preview_page.header,
+            "Organización": self.admin_page.header,
+            "Mascota": self.mascot_page.header,
+        }
 
-        sidebar = QFrame()
-        sidebar.setObjectName("sideRail")
-        sidebar.setFixedWidth(220)
+        sidebar = SideRail()
+        self.side_rail = sidebar
+        sidebar.setFixedWidth(232)
         sidebar_layout = QVBoxLayout(sidebar)
         sidebar_layout.setContentsMargins(16, 18, 16, 14)
         sidebar_layout.setSpacing(12)
@@ -1218,6 +1325,7 @@ class MainWindow(QMainWindow):
         self.mascot.set_scale(settings.scale)
         self.mascot.set_motion(settings.motion)
         self.mascot_page.set_sprite_problems(problems, any(a.source != "placeholder" for a in animations.values()))
+        self.mascot_page.preview.show_animation(settings.character.capitalize(), animations[AstroState.IDLE])
         self._mascot_character = settings.character
 
     def _astro_safely(self, action, *args, **kwargs) -> None:
@@ -1437,32 +1545,14 @@ class MainWindow(QMainWindow):
         if self.pages.currentWidget() is self.preview_page:
             self.preview_page.refresh()  # screenshots may have been added since the last visit
 
-    def _build_header(self) -> QHBoxLayout:
-        header = QHBoxLayout()
-        header.setSpacing(14)
-        mark = QFrame()
-        mark.setObjectName("appMark")
-        mark.setFixedSize(40, 40)
-        mark_layout = QVBoxLayout(mark)
-        mark_layout.setContentsMargins(0, 0, 0, 0)
-        mark_layout.addWidget(_icon_label("app", COLORS["accent"], 18), 0, Qt.AlignmentFlag.AlignCenter)
-        header.addWidget(mark, 0, Qt.AlignmentFlag.AlignVCenter)
-
-        titles = QVBoxLayout()
-        titles.setSpacing(2)
-        eyebrow = QLabel("GRABACIÓN Y MEMORIA DE REUNIONES")
-        eyebrow.setObjectName("eyebrow")
-        page_title = QLabel("Grabar reunión")
-        page_title.setObjectName("pageTitle")
-        titles.addWidget(eyebrow)
-        titles.addWidget(page_title)
-        header.addLayout(titles)
-        header.addStretch(1)
-
+    def _build_header(self) -> SectionHeader:
+        header = SectionHeader("Grabar")
+        self.recording_header = header
         self.state_pill = QLabel()
         self.state_pill.setObjectName("statePill")
         self.state_pill.setTextFormat(Qt.TextFormat.RichText)
-        header.addWidget(self.state_pill, 0, Qt.AlignmentFlag.AlignTop)
+        header.trailing.addWidget(self.state_pill, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight)
+        header.trailing.addStretch(1)
         return header
 
     def _build_update_banner(self) -> QFrame:
@@ -1535,7 +1625,11 @@ class MainWindow(QMainWindow):
         card, layout = _card()
         title = QLabel("Nueva grabación")
         title.setObjectName("sectionTitle")
-        layout.addWidget(title)
+        title_row = QHBoxLayout()
+        title_row.setSpacing(10)
+        title_row.addWidget(_icon_label("sparkle", "#F7C948", 22))
+        title_row.addWidget(title, 1)
+        layout.addLayout(title_row)
         layout.addSpacing(4)
 
         field_hint = QLabel("Título de la reunión")
@@ -1626,9 +1720,15 @@ class MainWindow(QMainWindow):
         titles.setSpacing(2)
         titles.addWidget(title)
         titles.addWidget(self.history_scope)
+        heading.addWidget(_icon_label("clock", NAV_ICON_COLOR, 22), 0, Qt.AlignmentFlag.AlignTop)
         heading.addLayout(titles)
         heading.addStretch(1)
         heading.addWidget(self.history_count, 0, Qt.AlignmentFlag.AlignTop)
+        self.see_all_button = QPushButton("Ver todas →")
+        self.see_all_button.setObjectName("linkButton")
+        self.see_all_button.setToolTip("Abre la Biblioteca con todas tus reuniones")
+        self.see_all_button.clicked.connect(lambda: self.side_nav.setCurrentRow(1))
+        heading.addWidget(self.see_all_button, 0, Qt.AlignmentFlag.AlignTop)
         layout.addLayout(heading)
 
         # Columns 1-3 keep title/status/id as item data; column 0 renders the card row.
@@ -1653,9 +1753,10 @@ class MainWindow(QMainWindow):
         self.table.setMinimumHeight(260)
         layout.addWidget(self.table, 1)
 
-        self.history_empty = QLabel("Todavía no hay grabaciones en este proyecto.")
-        self.history_empty.setObjectName("emptyState")
-        self.history_empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.history_empty = EmptyState(
+            "empty_recordings.png", "Todavía no hay grabaciones en este proyecto.",
+            "Inicia una grabación para que aparezca aquí.", art_height=80,
+        )
         layout.addWidget(self.history_empty, 1)
         layout.addWidget(_divider())
         layout.addLayout(self._build_meeting_actions())
@@ -1703,6 +1804,7 @@ class MainWindow(QMainWindow):
         title.setObjectName("sectionTitle")
         self.transcript_meta = QLabel()
         self.transcript_meta.setObjectName("monoMuted")
+        header.addWidget(_icon_label("list", NAV_ICON_COLOR, 22), 0, Qt.AlignmentFlag.AlignVCenter)
         header.addWidget(title, 0, Qt.AlignmentFlag.AlignBaseline)
         header.addWidget(self.transcript_meta, 0, Qt.AlignmentFlag.AlignBaseline)
         header.addStretch(1)
@@ -1767,10 +1869,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(_divider())
 
         self.transcript_stack = QStackedWidget()
-        self.transcript_placeholder = QLabel()
-        self.transcript_placeholder.setObjectName("emptyState")
-        self.transcript_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.transcript_placeholder.setWordWrap(True)
+        self.transcript_placeholder = EmptyState("empty_transcript.png", art_height=96)
         self.transcript_table = QTableWidget(0, 3)
         self.transcript_table.setObjectName("transcriptTable")
         self.transcript_table.setShowGrid(False)

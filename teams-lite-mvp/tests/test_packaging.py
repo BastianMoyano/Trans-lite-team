@@ -17,6 +17,16 @@ class PackagingTests(unittest.TestCase):
                 self.assertTrue((ROOT / "src" / "teams_lite" / "assets" / "mascots" / character
                                  / f"{character}_{state}.png").is_file(), (character, state))
 
+    def test_bundle_ships_the_room_art(self):
+        room = ROOT / "src" / "teams_lite" / "assets" / "room"  # bundled by the spec's assets folder
+        names = [f"header_{section}.png" for section in ("grabar", "biblioteca", "organizacion", "mascota")]
+        names += [f"icon_{section}.png" for section in ("grabar", "biblioteca", "organizacion", "mascota")]
+        names += ["sidebar_lantern.png", "room_left.png", "room_right.png", "empty_transcript.png",
+                  "empty_recordings.png", "empty_library.png", "empty_projects.png", "tile_vault.png",
+                  "tile_folder_planet.png", "tile_folder_star.png", "tip_bulb.png"]
+        for name in names:
+            self.assertTrue((room / name).is_file(), name)
+
     def test_bundle_ships_the_astromeet_visible_brand(self):
         assets = ROOT / "src" / "teams_lite" / "assets" / "branding"
         self.assertTrue((assets / "astromeet-icon.png").is_file())
