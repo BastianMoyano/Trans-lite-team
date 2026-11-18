@@ -37,8 +37,12 @@ class AppTests(unittest.TestCase):
                 self.application.processEvents()
                 self.assertEqual(COLORS['accent'], '#46C7B5')
                 self.assertIn(COLORS['accent'], APP_STYLESHEET)
-                self.assertEqual(window.brand_title.text(), 'Teams Lite')
-                self.assertEqual(window.brand_tagline.text(), 'Memoria de tus reuniones')
+                self.assertEqual(window.windowTitle(), 'AstroMeet')
+                self.assertFalse(window.windowIcon().isNull())
+                self.assertEqual(window.brand_title.text(), 'AstroMeet')
+                self.assertEqual(window.brand_tagline.text(), 'Tu compañero inteligente de reuniones')
+                self.assertEqual(window.mascot.windowTitle(), 'AstroMeet · Astro')
+                self.assertIn('abrir AstroMeet', window.mascot.sprite.toolTip())
                 self.assertEqual(
                     [window.side_nav.item(index).text() for index in range(window.side_nav.count())],
                     ['Grabar', 'Biblioteca', 'Organización', 'Mascota'],

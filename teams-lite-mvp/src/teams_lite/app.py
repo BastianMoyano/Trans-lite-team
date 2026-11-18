@@ -1,4 +1,4 @@
-"""PySide6 desktop application for Teams Lite."""
+"""PySide6 desktop application for AstroMeet."""
 from __future__ import annotations
 
 import argparse
@@ -110,6 +110,10 @@ COLORS = {
     "warning": "#F5B544",
     "danger": "#F87171",
 }
+
+PRODUCT_NAME = "AstroMeet"
+PRODUCT_TAGLINE = "Tu compañero inteligente de reuniones"
+BRAND_ICON = Path(__file__).resolve().parent / "assets" / "branding" / "astromeet-icon.png"
 
 APP_STYLESHEET = """
 QMainWindow, QScrollArea#pageScroll, QWidget#pageContent {
@@ -996,7 +1000,8 @@ class MainWindow(QMainWindow):
         self.signals.transcription_finished.connect(self._on_transcription_finished)
         self.signals.update_available.connect(self.show_update)
         self.signals.library_task_done.connect(self._library_task_done)
-        self.setWindowTitle("Teams Lite")
+        self.setWindowTitle(PRODUCT_NAME)
+        self.setWindowIcon(QIcon(str(BRAND_ICON)))
         # The 190 px side menu sits next to the original 1000 x 780 page.
         self.resize(1190, 780)
         self.setMinimumSize(1010, 600)
@@ -1079,16 +1084,24 @@ class MainWindow(QMainWindow):
         brand_mark.setFixedSize(36, 36)
         brand_mark_layout = QVBoxLayout(brand_mark)
         brand_mark_layout.setContentsMargins(0, 0, 0, 0)
-        brand_mark_layout.addWidget(
-            _icon_label("app", COLORS["accent"], 16), 0, Qt.AlignmentFlag.AlignCenter
+        brand_icon = QLabel()
+        brand_icon.setPixmap(
+            QPixmap(str(BRAND_ICON)).scaled(
+                32,
+                32,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
         )
+        brand_mark_layout.addWidget(brand_icon, 0, Qt.AlignmentFlag.AlignCenter)
         brand.addWidget(brand_mark, 0, Qt.AlignmentFlag.AlignVCenter)
         brand_copy = QVBoxLayout()
         brand_copy.setSpacing(1)
-        self.brand_title = QLabel("Teams Lite")
+        self.brand_title = QLabel(PRODUCT_NAME)
         self.brand_title.setObjectName("brandTitle")
-        self.brand_tagline = QLabel("Memoria de tus reuniones")
+        self.brand_tagline = QLabel(PRODUCT_TAGLINE)
         self.brand_tagline.setObjectName("brandTagline")
+        self.brand_tagline.setWordWrap(True)
         brand_copy.addWidget(self.brand_title)
         brand_copy.addWidget(self.brand_tagline)
         brand.addLayout(brand_copy, 1)
@@ -1411,7 +1424,7 @@ class MainWindow(QMainWindow):
                 return
 
     def open_meeting(self, meeting_id: str) -> None:
-        """Shows a meeting picked in another section on the Teams Lite page."""
+        """Shows a meeting picked in another section on the AstroMeet page."""
         self.side_nav.setCurrentRow(0)
         self._show_placement_of(meeting_id)
         self._refresh()
@@ -1488,7 +1501,7 @@ class MainWindow(QMainWindow):
     def show_update(self, info: UpdateInfo) -> None:
         self._update = info
         self.update_text.setText(
-            f"<b style='color:#EAF2FC'>Hay una nueva versión de Teams Lite: {info.version}.</b> "
+            f"<b style='color:#EAF2FC'>Hay una nueva versión de {PRODUCT_NAME}: {info.version}.</b> "
             f"Tienes la {__version__}. El instalador actualiza encima y conserva tus reuniones, "
             "la configuración y el modelo."
         )
@@ -1497,7 +1510,7 @@ class MainWindow(QMainWindow):
     def _open_update(self) -> None:
         if self._update is not None:
             QDesktopServices.openUrl(QUrl(self._update.installer_url or self._update.page_url))
-            self._set_status("Descargando el instalador en el navegador. Cierra Teams Lite antes de ejecutarlo.")
+            self._set_status(f"Descargando el instalador en el navegador. Cierra {PRODUCT_NAME} antes de ejecutarlo.")
 
     def _build_notice(self) -> QFrame:
         notice_card = QFrame()
@@ -2732,11 +2745,11 @@ class MainWindow(QMainWindow):
         self._astro_safely(self.astro.error, message)  # before the dialog, which blocks until closed
         self._busy = False
         self._set_status(message, tone="error")
-        QMessageBox.warning(self, "Teams Lite", message)
+        QMessageBox.warning(self, PRODUCT_NAME, message)
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt API
         if self.recorder is not None:
-            QMessageBox.warning(self, "Teams Lite", "Detén la grabación antes de cerrar Teams Lite.")
+            QMessageBox.warning(self, PRODUCT_NAME, f"Detén la grabación antes de cerrar {PRODUCT_NAME}.")
             event.ignore()
             return
         self._release_moment_hotkey()
@@ -2745,7 +2758,7 @@ class MainWindow(QMainWindow):
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Grabador recuperable Teams Lite")
+    parser = argparse.ArgumentParser(description=f"Grabador recuperable {PRODUCT_NAME}")
     parser.add_argument(
         "--config",
         default=None,
@@ -2753,10 +2766,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     if sys.platform != "win32":
-        print("La captura de audio de Teams Lite solo es compatible con Windows.", file=sys.stderr)
+        print(f"La captura de audio de {PRODUCT_NAME} solo es compatible con Windows.", file=sys.stderr)
         return 2
     config = load_config(args.config or default_config_path())
     application = QApplication(sys.argv[:1])
+    application.setApplicationName(PRODUCT_NAME)
+    application.setWindowIcon(QIcon(str(BRAND_ICON)))
     application.setStyle("Fusion")
     application.setPalette(_dark_palette())
     application.setFont(QFont("Segoe UI", 10))

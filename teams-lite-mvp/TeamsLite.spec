@@ -54,6 +54,7 @@ exe = EXE(
     strip=False,
     upx=False,  # UPX is known to corrupt torch/onnxruntime DLLs
     console=False,
+    icon=str(root / "src" / "teams_lite" / "assets" / "branding" / "astromeet.ico"),
 )
 bundle = COLLECT(
     exe,

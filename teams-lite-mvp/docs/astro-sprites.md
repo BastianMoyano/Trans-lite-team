@@ -1,6 +1,6 @@
 # Mascot spritesheets
 
-Teams Lite ships two characters, Astro and Brasa (`src/teams_lite/assets/mascots/`). Your own drawings
+AstroMeet ships two characters, Astro and Brasa (`src/teams_lite/assets/mascots/`). Your own drawings
 replace a shipped character, state by state, or add a new one without touching code: put them in a
 character folder and pick the character in **Mascota**. A state with no drawing anywhere uses a simple
 code-drawn placeholder.
@@ -45,7 +45,7 @@ the placeholder for that state, and the Mascota section says which file could no
   character does not jump when the state changes. 32, 48 or 64 px frames work well.
 - Any number of frames; every state loops. Playback speed: idle 4 fps, error 4, recording 5,
   stopping, processing and success 6, moving and capturing 8.
-- Draw at the final pixel size: Teams Lite scales by whole numbers with no smoothing
+- Draw at the final pixel size: AstroMeet scales by whole numbers with no smoothing
   (Pequeña ×2, Mediana ×3, Grande ×4, Muy grande ×5), so pixels stay sharp.
 
 ## Prompt: Astro

@@ -146,7 +146,7 @@ class PreviewPage(QWidget):
         header.addWidget(self.move_button)
         self.import_button = QPushButton("Importar…")
         self.import_button.setObjectName("ghostButton")
-        self.import_button.setToolTip("Importa un paquete .zip de reunión exportado desde otro Teams Lite")
+        self.import_button.setToolTip("Importa un paquete .zip de reunión exportado desde otro AstroMeet")
         header.addWidget(self.import_button)
         layout.addLayout(header)
 

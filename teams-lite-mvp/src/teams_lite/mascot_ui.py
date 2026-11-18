@@ -47,7 +47,7 @@ class MascotWidget(QWidget):
     """Astro floats over Teams: its look follows the app's real state.
 
     A click unfolds its actions around it (Grabar/Detener on the left, Capturar on the right, OCR
-    below) without moving Astro; a double click opens Teams Lite; a drag moves it. Its settings live
+    below) without moving Astro; a double click opens AstroMeet; a drag moves it. Its settings live
     in the Mascota section, not on Astro.
     """
 
@@ -62,7 +62,7 @@ class MascotWidget(QWidget):
         super().__init__(parent, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
                          | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.WindowDoesNotAcceptFocus)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setWindowTitle("Teams Lite · Astro")
+        self.setWindowTitle("AstroMeet · Astro")
         self.machine = machine
         self._animations: dict[AstroState, Animation] = {}
         self._scale = 3
@@ -87,7 +87,7 @@ class MascotWidget(QWidget):
         self.bubble.hide()
         layout.addWidget(self.bubble, 0, 0, 1, 3, Qt.AlignmentFlag.AlignHCenter)
         self.sprite = QLabel()
-        self.sprite.setToolTip("Astro · clic: acciones · doble clic: abrir Teams Lite · arrastrar: mover")
+        self.sprite.setToolTip("Astro · clic: acciones · doble clic: abrir AstroMeet · arrastrar: mover")
         self.sprite.setCursor(Qt.CursorShape.PointingHandCursor)
         layout.addWidget(self.sprite, 1, 1, Qt.AlignmentFlag.AlignCenter)
         self.timer_label = QLabel()
@@ -269,7 +269,7 @@ class MascotWidget(QWidget):
         self._poll.stop()
         self.frame_timer.stop()
 
-    # Click: actions · double click: Teams Lite · drag: move (MOVING while dragged) -------------
+    # Click: actions · double click: AstroMeet · drag: move (MOVING while dragged) -------------
     def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt API
         if event.button() == Qt.MouseButton.LeftButton:
             self._press = event.globalPosition().toPoint()
@@ -327,7 +327,7 @@ class MascotSettingsPage(QWidget):
             "Astro flota sobre Teams y muestra lo que pasa: grabando, capturando, procesando o si algo falló. "
             "Haz clic en Astro para desplegar sus acciones: Grabar o Detener a la izquierda (al instante, sin pedir "
             "nombre, organización ni proyecto: usa los valores de esta sección), Capturar a la derecha y OCR abajo. "
-            "Doble clic abre Teams Lite."
+            "Doble clic abre AstroMeet."
         )
         hint.setObjectName("fieldHint")
         hint.setWordWrap(True)

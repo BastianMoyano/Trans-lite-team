@@ -1,6 +1,14 @@
-# Teams Lite MVP
+# AstroMeet
 
-Teams Lite is a Windows desktop MVP that prioritizes **not losing meeting audio**. It records the default microphone and Windows system output as separate, recoverable WAV segments, stores metadata in SQLite, and optionally transcribes finalized audio with NVIDIA Parakeet TDT 0.6B V3 through ONNX Runtime on CPU.
+![AstroMeet — Tu compañero inteligente de reuniones](docs/images/astromeet-overview.png)
+
+**Tu compañero inteligente de reuniones**
+
+> Cada reunión tiene una historia. Astro la recuerda.
+
+**Grabación · Capturas · Transcripción · Minutas**
+
+AstroMeet is a Windows desktop MVP that prioritizes **not losing meeting audio**. It records the default microphone and Windows system output as separate, recoverable WAV segments, stores metadata in SQLite, and optionally transcribes finalized audio with NVIDIA Parakeet TDT 0.6B V3 through ONNX Runtime on CPU.
 
 It does not use Node, Electron, a GPU, or private Microsoft Teams APIs.
 
@@ -113,7 +121,7 @@ While recording, "Marcar momento" (with an optional note) or the global hotkey *
 - Each moment stores its time in the recording and a JPEG screenshot of the Teams window in `data/<meeting>/moments/` (index in `moments.jsonl`).
 - If Teams is minimized or hidden, the moment is still recorded without a screenshot, and the status line says why. Windows does not render minimized windows, so nothing can be captured from them.
 - Moments appear in the transcript at their time (double-click opens the screenshot) and are sent to the minutes as text only; screenshots never leave the machine.
-- If another application already owns Ctrl+Alt+M, the recording card says so, the button and the mascot's *Capturar reunión* keep working, and Teams Lite retries the hotkey every 5 seconds until it is free.
+- If another application already owns Ctrl+Alt+M, the recording card says so, the button and the mascot's *Capturar reunión* keep working, and AstroMeet retries the hotkey every 5 seconds until it is free.
 - Each recording logs in its events whether the hotkey was ready (`moment_hotkey_ready`), taken by another application (`moment_hotkey_unavailable`) and every press it received (`moment_hotkey_pressed`), so a press that never marked a moment can be explained.
 - Teams is captured with `PrintWindow(PW_RENDERFULLCONTENT)`: a plain screen grab of a WebView2/Chromium window returns black, while this works even when other windows cover Teams. All-black captures are discarded.
 - With a single monitor while presenting, Teams is often minimized: a moment marked by hand then captures the monitor under the cursor (what participants are seeing). Automatic attendee OCR never captures the whole screen.
@@ -151,7 +159,7 @@ Ask Claude Code or Codex about what was said or decided, inside the app window; 
 - **One meeting**: the **Chat con IA** view in Grabar, next to *Transcripción* and *Minuta*, talks about the selected meeting, with the CLI chosen in the selector next to *Generar minuta*.
 - **A project**: in Biblioteca, open a project (or the Cofre de reuniones / Sin proyecto) and press **Conversar con IA**; the chat opens to the right of its meetings, with its own Claude/Codex selector.
 
-Type a question and press Enter or *Enviar*; the answer appears in the panel while the app stays usable. Follow-up questions keep the context of the conversation. Each meeting and project keeps its own conversation while Teams Lite is open; **Nueva conversación** starts over. *Copiar* and *Descargar* in the Chat tab copy or save the conversation. Only meetings that already have minutes are included.
+Type a question and press Enter or *Enviar*; the answer appears in the panel while the app stays usable. Follow-up questions keep the context of the conversation. Each meeting and project keeps its own conversation while AstroMeet is open; **Nueva conversación** starts over. *Copiar* and *Descargar* in the Chat tab copy or save the conversation. Only meetings that already have minutes are included.
 
 When a conversation starts, the app rebuilds `data/.chat/<scope>/` with copies of each meeting's `minutes.md` and `transcript.txt`, an `INDEX.md` (title, date, folder) and the instructions in `CLAUDE.md` and `AGENTS.md`. Each question runs the CLI once in that folder, in the background and without a console window:
 
@@ -201,7 +209,7 @@ Uninstalling removes the program and the Parakeet model it downloaded (other fol
 
 ### Updates
 
-When Teams Lite opens, it asks `https://api.github.com/repos/BastianMoyano/Trans-lite-team/releases/latest` for the latest release, in the background and with a 5-second timeout. The request carries no meeting data, only a generic `TeamsLite-update-check` user agent. If the tag (for example `v0.2.0`) is newer than the running version, a banner offers **Descargar actualización**, which opens the release's `TeamsLite-Setup-<version>.exe` in the browser, and **Ahora no**. Offline, rate-limited or unexpected answers show nothing. Close Teams Lite before running the new installer; it upgrades in place and keeps meetings, `config.json` and the model.
+When AstroMeet opens, it asks `https://api.github.com/repos/BastianMoyano/Trans-lite-team/releases/latest` for the latest release, in the background and with a 5-second timeout. The request carries no meeting data, only a generic `TeamsLite-update-check` user agent. If the tag (for example `v0.2.0`) is newer than the running version, a banner offers **Descargar actualización**, which opens the release's `TeamsLite-Setup-<version>.exe` in the browser, and **Ahora no**. Offline, rate-limited or unexpected answers show nothing. Close AstroMeet before running the new installer; it upgrades in place and keeps meetings, `config.json` and the model.
 
 To publish an update, raise `version` in `pyproject.toml` and `__version__` in `src/teams_lite/__init__.py` (a test keeps them equal), run `.uild_windows.ps1 -Installer`, and attach `dist/installer/TeamsLite-Setup-<version>.exe` to a GitHub release tagged `v<version>`.
 
@@ -226,22 +234,22 @@ Filing is metadata only: a moved meeting keeps its folder under `data/`. Databas
 
 ### Mascot (Astro)
 
-**Astro**, a small pixel-art astral dragon, floats over the other windows, Teams included, so recording does not need Teams Lite in front. It only shows what really happens:
+**Astro**, a small pixel-art astral dragon, floats over the other windows, Teams included, so recording does not need AstroMeet in front. It only shows what really happens:
 
 - **Listo para comenzar** while idle, **Grabando reunión** during a recording (with a timer), **Deteniendo** until the audio is stored, **Procesando grabación** with the transcription percentage, **¡Reunión guardada!** when the audio or the transcript is saved, **Captura realizada** (or the OCR result) after a capture, and a worried face with the error text when something fails. Short messages appear in a pixel-art bubble.
 - **Click Astro** to unfold its actions around it, without moving it: **Grabar** on the left starts recording at once, without asking for a title, organization or project, and becomes **Detener** while recording; **Capturar** on the right marks a moment with a screenshot, like Ctrl+Alt+M; **OCR** below reads the attendees. Capturar and OCR work while recording. The buttons fold back after an action or a few seconds.
-- **Double-click Astro** to open Teams Lite. **Drag it** anywhere; it flies while moved and remembers where it was left. It never takes the keyboard from Teams. Closing Teams Lite closes it.
+- **Double-click Astro** to open AstroMeet. **Drag it** anywhere; it flies while moved and remembers where it was left. It never takes the keyboard from Teams. Closing AstroMeet closes it.
 - Astro only mirrors events: if drawing it ever fails, recording carries on untouched. Its timers stop while it is hidden or still.
 
 Astro's settings live in the **Mascota** section only. It sets what Astro records with (the meeting title, default *Reunión rápida*; the organization and project, none means the Cofre de reuniones) and how it looks: shown or hidden, sound on or off, animations on or off (off shows a still frame), size (×2 to ×5, always pixel-sharp), the character, and a button to put it back in its starting corner. Changes apply at once and are stored in `data/mascot.json`. If the default organization is deleted, the default becomes the Cofre; if only the default project is gone, a quick recording stays in the organization without a project and the status says so.
 
-Teams Lite ships two characters, **Astro** (an astral dragon) and **Brasa** (an ember salamander-dragon), each with eight animated states; a code-drawn placeholder covers any missing state. Your own spritesheets in `data/mascots/<character>/` replace a shipped character or add a new one: see [docs/astro-sprites.md](docs/astro-sprites.md) for the folder layout (`data/mascots/<character>/`), the eight states, the PNG rules and ready-to-use prompts.
+AstroMeet ships two characters, **Astro** (an astral dragon) and **Brasa** (an ember salamander-dragon), each with eight animated states; a code-drawn placeholder covers any missing state. Your own spritesheets in `data/mascots/<character>/` replace a shipped character or add a new one: see [docs/astro-sprites.md](docs/astro-sprites.md) for the folder layout (`data/mascots/<character>/`), the eight states, the PNG rules and ready-to-use prompts.
 
 ### Sharing meetings (export and import)
 
 **Exportar** under *Grabaciones recientes* (or right-click › **Exportar…** in Biblioteca) saves the meeting as a `.zip` package. It holds the transcript, minutes, marked moments with their screenshots, attendees and the first active-speaker frame. **Incluir audio** is off by default; turn it on when the receiver should be able to transcribe again (a one-hour meeting adds several hundred MB).
 
-**Importar…** in Biblioteca adds a package as a new meeting. The destination starts on the organization or project being browsed. At the top level it starts on the organization and project with the same names as the sender's, ignoring case, or on the Cofre when there is no match. The meeting keeps its original title, date and status, and importing the same package twice creates two meetings. Packages are checked before anything is written: a damaged package, one from a newer Teams Lite, or one with paths that leave the meeting folder is rejected and changes nothing.
+**Importar…** in Biblioteca adds a package as a new meeting. The destination starts on the organization or project being browsed. At the top level it starts on the organization and project with the same names as the sender's, ignoring case, or on the Cofre when there is no match. The meeting keeps its original title, date and status, and importing the same package twice creates two meetings. Packages are checked before anything is written: a damaged package, one from a newer AstroMeet, or one with paths that leave the meeting folder is rejected and changes nothing.
 
 Meeting data is stored under `data/<meeting-id>/`; metadata is in `data/meetings.sqlite3`. New meetings use a readable, unique folder name: local start date, hour and minute, then the title (for example `data/2026-11-13 07-44 Daily ventas/`). Characters Windows does not allow in names become `_`, the title is cut to 40 characters, and a second meeting with the same minute and title gets ` (2)`. Meetings recorded before this change keep their original folder.
 
