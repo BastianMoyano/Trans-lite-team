@@ -35,6 +35,7 @@ BUBBLE_SECONDS = 4.0
 BUBBLE_MIN_WIDTH, BUBBLE_MAX_WIDTH = 60, 240
 POLL_MS = 400  # reactions (capture, success, error) expire on their own; checked this often
 SIZE_LABELS = {2: "Pequeña", 3: "Mediana", 4: "Grande", 5: "Muy grande"}
+PREVIEW_PX = 128  # the Mascota section's preview box: 64 px frames at 2x, the 32 px placeholder at 4x
 
 
 def mascot_face(size: int) -> QPixmap:
@@ -304,6 +305,73 @@ class MascotWidget(QWidget):
         super().mouseDoubleClickEvent(event)
 
 
+class MascotPreview(QWidget):
+    """The chosen character's idle pixel art, shown large in the Mascota section before it floats over Teams."""
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._frames: list = []
+        self._fps = 4
+        self._frame = 0
+        self._motion = True
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        self.sprite = QLabel()
+        self.sprite.setObjectName("mascotPreview")
+        self.sprite.setFixedSize(PREVIEW_PX, PREVIEW_PX)
+        self.sprite.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.sprite.setAccessibleName("Vista previa de la mascota")
+        self.name = QLabel()
+        self.name.setObjectName("sectionMeta")
+        self.name.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.sprite, 0, Qt.AlignmentFlag.AlignHCenter)
+        layout.addWidget(self.name, 0, Qt.AlignmentFlag.AlignHCenter)
+        self.frame_timer = QTimer(self)
+        self.frame_timer.timeout.connect(self._next_frame)
+
+    def show_animation(self, name: str, animation: Animation) -> None:
+        self._frames = list(animation.frames)
+        self._fps = max(1, animation.fps)
+        self._frame = 0
+        self.name.setText(name)
+        self._restart_frames()
+        self._render()
+
+    def set_motion(self, enabled: bool) -> None:
+        if enabled == self._motion:
+            return
+        self._motion = enabled
+        self._frame = 0
+        self._restart_frames()
+        self._render()
+
+    def _restart_frames(self) -> None:
+        if self._motion and len(self._frames) > 1 and self.isVisible():
+            self.frame_timer.start(int(1000 / self._fps))
+        else:
+            self.frame_timer.stop()
+
+    def _next_frame(self) -> None:
+        self._frame += 1
+        self._render()
+
+    def _render(self) -> None:
+        if not self._frames:
+            return
+        frame = self._frames[self._frame % len(self._frames)]
+        scale = max(1, PREVIEW_PX // max(frame.width(), frame.height()))  # whole numbers keep pixels sharp
+        self.sprite.setPixmap(QPixmap.fromImage(scale_pixels(frame, scale)))
+
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt API
+        super().showEvent(event)
+        self._restart_frames()
+
+    def hideEvent(self, event) -> None:  # noqa: N802 - Qt API
+        super().hideEvent(event)
+        self.frame_timer.stop()
+
+
 class MascotSettingsPage(QWidget):
     """The Mascota section: what Astro records with, how it looks and whether it is shown."""
 
@@ -323,18 +391,22 @@ class MascotSettingsPage(QWidget):
         titles = QVBoxLayout()
         title = QLabel("Mascota")
         title.setObjectName("pageTitle")
-        hint = QLabel(
-            "Astro flota sobre Teams y muestra lo que pasa: grabando, capturando, procesando o si algo falló. "
-            "Haz clic en Astro para desplegar sus acciones: Grabar o Detener a la izquierda (al instante, sin pedir "
-            "nombre, organización ni proyecto: usa los valores de esta sección), Capturar a la derecha y OCR abajo. "
-            "Doble clic abre AstroMeet."
-        )
+        hint = QLabel("Configura cómo te acompaña Astro durante tus reuniones.")
         hint.setObjectName("fieldHint")
         hint.setWordWrap(True)
         titles.addWidget(title)
         titles.addWidget(hint)
         heading.addLayout(titles, 1)
         layout.addLayout(heading)
+        columns = QHBoxLayout()
+        columns.setSpacing(14)
+        left = QVBoxLayout()
+        left.setSpacing(14)
+        right = QVBoxLayout()
+        right.setSpacing(14)
+        columns.addLayout(left, 3)
+        columns.addLayout(right, 2)
+        layout.addLayout(columns)
 
         recording = QFrame()
         recording.setObjectName("card")
@@ -357,7 +429,7 @@ class MascotSettingsPage(QWidget):
         self.placement_picker = PlacementPicker(store)
         self.placement_picker.set_placement(settings.organization_id, settings.project_id)
         form.addWidget(self.placement_picker)
-        layout.addWidget(recording)
+        left.addWidget(recording)
 
         look = QFrame()
         look.setObjectName("card")
@@ -405,8 +477,41 @@ class MascotSettingsPage(QWidget):
         self.sprite_notice.setObjectName("fieldHint")
         self.sprite_notice.setWordWrap(True)
         options.addWidget(self.sprite_notice)
-        layout.addWidget(look)
-        layout.addStretch(1)
+        left.addWidget(look)
+        left.addStretch(1)
+
+        how = QFrame()
+        how.setObjectName("card")
+        how_layout = QVBoxLayout(how)
+        how_layout.setContentsMargins(20, 18, 20, 18)
+        how_layout.setSpacing(10)
+        section = QLabel("¿Cómo funciona?")
+        section.setObjectName("sectionTitle")
+        how_layout.addWidget(section)
+        explanation = QLabel(
+            "Astro flota sobre Teams y muestra lo que está pasando: grabando, capturando, procesando o si algo falló."
+        )
+        explanation.setObjectName("fieldHint")
+        explanation.setWordWrap(True)
+        how_layout.addWidget(explanation)
+        self.preview = MascotPreview()
+        how_layout.addWidget(self.preview, 0, Qt.AlignmentFlag.AlignHCenter)
+        right.addWidget(how)
+        tip = QFrame()
+        tip.setObjectName("card")
+        tip_layout = QVBoxLayout(tip)
+        tip_layout.setContentsMargins(20, 18, 20, 18)
+        tip_text = QLabel(
+            "Tip: haz clic en Astro para desplegar sus acciones: Grabar o Detener a la izquierda (al instante, sin "
+            "pedir nombre, organización ni proyecto: usa los valores de esta sección), Capturar a la derecha y OCR "
+            "abajo. Doble clic abre AstroMeet."
+        )
+        tip_text.setObjectName("fieldHint")
+        tip_text.setWordWrap(True)
+        tip_layout.addWidget(tip_text)
+        right.addWidget(tip)
+        right.addStretch(1)
+        self.preview.set_motion(settings.motion)
         self.reload_characters()
 
         for checkbox in (self.show_checkbox, self.sound_checkbox, self.motion_checkbox):
@@ -466,4 +571,5 @@ class MascotSettingsPage(QWidget):
         self._settings.project_id = self.placement_picker.project_id()
         self._settings.scale = int(self.size_combo.currentData() or 3)
         self._settings.character = str(self.character_combo.currentData() or "astro")
+        self.preview.set_motion(self._settings.motion)
         self.changed.emit(self._settings)

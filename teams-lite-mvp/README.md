@@ -241,7 +241,7 @@ Filing is metadata only: a moved meeting keeps its folder under `data/`. Databas
 - **Double-click Astro** to open AstroMeet. **Drag it** anywhere; it flies while moved and remembers where it was left. It never takes the keyboard from Teams. Closing AstroMeet closes it.
 - Astro only mirrors events: if drawing it ever fails, recording carries on untouched. Its timers stop while it is hidden or still.
 
-Astro's settings live in the **Mascota** section only. It sets what Astro records with (the meeting title, default *Reunión rápida*; the organization and project, none means the Cofre de reuniones) and how it looks: shown or hidden, sound on or off, animations on or off (off shows a still frame), size (×2 to ×5, always pixel-sharp), the character, and a button to put it back in its starting corner. Changes apply at once and are stored in `data/mascot.json`. If the default organization is deleted, the default becomes the Cofre; if only the default project is gone, a quick recording stays in the organization without a project and the status says so.
+Astro's settings live in the **Mascota** section only. It sets what Astro records with (the meeting title, default *Reunión rápida*; the organization and project, none means the Cofre de reuniones) and how it looks: shown or hidden, sound on or off, animations on or off (off shows a still frame), size (×2 to ×5, always pixel-sharp), the character (its *¿Cómo funciona?* card previews the chosen character's pixel art, so Astro or Brasa can be seen before it floats over Teams), and a button to put it back in its starting corner. Changes apply at once and are stored in `data/mascot.json`. If the default organization is deleted, the default becomes the Cofre; if only the default project is gone, a quick recording stays in the organization without a project and the status says so.
 
 AstroMeet ships two characters, **Astro** (an astral dragon) and **Brasa** (an ember salamander-dragon), each with eight animated states; a code-drawn placeholder covers any missing state. Your own spritesheets in `data/mascots/<character>/` replace a shipped character or add a new one: see [docs/astro-sprites.md](docs/astro-sprites.md) for the folder layout (`data/mascots/<character>/`), the eight states, the PNG rules and ready-to-use prompts.
 
@@ -281,7 +281,7 @@ src/teams_lite/
   chat.py           chat workspace and multi-turn Claude/Codex sessions
   chat_ui.py        chat panel shown in Grabar and Biblioteca
   mascot.py         mascot defaults (data/mascot.json) and where a quick recording is filed
-  mascot_ui.py      Astro on screen (sprite, bubble, menu) and the Mascota section
+  mascot_ui.py      Astro on screen (sprite, bubble, menu) and the Mascota section with its preview
   astro.py          Astro's state machine, driven by real recording events
   astro_sprites.py  character spritesheets and the pixel-art placeholder
   previews.py       picks the screenshot that represents a meeting

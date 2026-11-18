@@ -547,6 +547,48 @@ class MascotUiTests(unittest.TestCase):
                 self._close(window)
 
 
+    def test_mascot_section_previews_the_selected_character_pixel_art(self):
+        from PySide6.QtGui import QPixmap
+        from teams_lite.astro import AstroState
+        from teams_lite.astro_sprites import load_animations, scale_pixels
+        with tempfile.TemporaryDirectory() as d:
+            window = self._window(d)
+            try:
+                page = window.mascot_page
+
+                def previewed():
+                    return page.preview.sprite.pixmap().toImage()
+
+                def idle_frames(character):
+                    frames = load_animations(d, character)[0][AstroState.IDLE].frames
+                    scale = page.preview.sprite.pixmap().width() // frames[0].width()
+                    return [QPixmap.fromImage(scale_pixels(frame, scale)).toImage() for frame in frames]
+
+                self.assertEqual(page.preview.sprite.pixmap().width(), page.preview.sprite.pixmap().height())
+                self.assertGreaterEqual(page.preview.sprite.pixmap().width(), 128)  # big enough to see the pixels
+                self.assertIn(previewed(), idle_frames('astro'))
+                self.assertEqual(page.preview.name.text(), 'Astro')
+
+                page.character_combo.setCurrentIndex(page.character_combo.findData('brasa'))
+                self.assertIn(previewed(), idle_frames('brasa'))
+                self.assertNotIn(previewed(), idle_frames('astro'))
+                self.assertEqual(page.preview.name.text(), 'Brasa')
+
+                self.assertFalse(page.preview.frame_timer.isActive())  # the section is not on screen yet
+                window.show()
+                window.side_nav.setCurrentRow(3)
+                self.assertTrue(page.preview.frame_timer.isActive())
+                page.motion_checkbox.setChecked(False)
+                self.assertFalse(page.preview.frame_timer.isActive())  # a still image, like Astro itself
+                page.motion_checkbox.setChecked(True)
+                window.side_nav.setCurrentRow(0)
+                self.assertFalse(page.preview.frame_timer.isActive())  # no animation work for a hidden section
+
+                page.character_combo.setCurrentIndex(page.character_combo.findData('astro'))
+                self.assertIn(previewed(), idle_frames('astro'))
+            finally:
+                self._close(window)
+
     def test_mascot_section_sets_the_defaults_and_visibility(self):
         from teams_lite.mascot import load_mascot_settings
         with tempfile.TemporaryDirectory() as d:

@@ -79,7 +79,7 @@ from .chat_ui import ChatPanel
 from .minutes import CLI_LABELS, MinutesError, generate_minutes, load_minutes
 from .previews import meeting_screenshots
 from .mascot import load_mascot_settings, resolve_placement, save_mascot_settings
-from .astro import AstroMachine
+from .astro import AstroMachine, AstroState
 from .astro_sprites import load_animations
 from .mascot_ui import MascotSettingsPage, MascotWidget
 from .moments import capture_moment, format_offset, load_moments, moments_for_minutes
@@ -1218,6 +1218,7 @@ class MainWindow(QMainWindow):
         self.mascot.set_scale(settings.scale)
         self.mascot.set_motion(settings.motion)
         self.mascot_page.set_sprite_problems(problems, any(a.source != "placeholder" for a in animations.values()))
+        self.mascot_page.preview.show_animation(settings.character.capitalize(), animations[AstroState.IDLE])
         self._mascot_character = settings.character
 
     def _astro_safely(self, action, *args, **kwargs) -> None:
