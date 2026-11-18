@@ -360,6 +360,12 @@ class MascotUiTests(unittest.TestCase):
         window._show_error = mock.Mock(side_effect=AssertionError('no dialog expected'))
         return window
 
+    def _wait_for(self, condition, seconds=2.0):
+        deadline = time.monotonic() + seconds
+        while not condition() and time.monotonic() < deadline:
+            self.application.processEvents()
+            time.sleep(0.01)
+
     def test_astro_floats_and_runs_the_quick_actions_from_its_menu(self):
         from teams_lite.astro import AstroState
         with tempfile.TemporaryDirectory() as d, mock.patch('teams_lite.app.Recorder', _FakeRecorder):
@@ -371,43 +377,55 @@ class MascotUiTests(unittest.TestCase):
                 self.assertTrue(mascot.windowFlags() & Qt.WindowType.FramelessWindowHint)
                 self.assertTrue(mascot.windowFlags() & Qt.WindowType.WindowDoesNotAcceptFocus)
                 self.assertEqual(mascot.sprite.pixmap().width(), 64 * 3)  # the shipped 64 px Astro at the default size
-                self.assertEqual([a.text() for a in mascot.menu.actions() if a.text()],
-                                 ['Grabar reunión', 'Capturar reunión', 'Leer asistentes (OCR)', 'Abrir Teams Lite',
-                                  'Efectos de sonido', 'Animaciones y movimiento'])
-                self.assertFalse(mascot.capture_action.isEnabled())
-                self.assertFalse(mascot.ocr_action.isEnabled())
+                self.assertFalse(hasattr(mascot, 'menu'))  # settings live in the Mascota section only
+                for button in (mascot.record_button, mascot.capture_button, mascot.ocr_button):
+                    self.assertTrue(button.isHidden())  # folded until Astro is clicked
 
-                mascot.record_action.trigger()  # starts at once with the defaults
+                sprite_before = mascot.sprite.mapToGlobal(mascot.sprite.rect().topLeft())
+                mascot.mousePressEvent(_mouse(QEvent.Type.MouseButtonPress, mascot, 10, 10))
+                mascot.mouseReleaseEvent(_mouse(QEvent.Type.MouseButtonRelease, mascot, 10, 10))
+                self._wait_for(lambda: not mascot.record_button.isHidden())
+                self.application.processEvents()
+                self.assertEqual(mascot.sprite.mapToGlobal(mascot.sprite.rect().topLeft()), sprite_before)
+                sprite = mascot.sprite.geometry()
+                self.assertLess(mascot.record_button.geometry().right(), sprite.left())  # left
+                self.assertGreater(mascot.capture_button.geometry().left(), sprite.right())  # right
+                self.assertGreater(mascot.ocr_button.geometry().top(), sprite.bottom())  # below
+                self.assertEqual(mascot.record_button.text(), 'Grabar')
+                self.assertFalse(mascot.capture_button.isEnabled())
+                self.assertFalse(mascot.ocr_button.isEnabled())
+
+                mascot.record_button.click()  # starts at once with the defaults
                 self.assertIsNotNone(window.recorder)
                 self.assertEqual(window.store.get_meeting(window.meeting_id)['title'], 'Reunión rápida')
                 self.assertIs(window.astro.state, AstroState.RECORDING)
                 self.assertEqual(mascot.bubble.text(), 'Grabando reunión')
-                self.assertEqual(mascot.record_action.text(), 'Detener grabación')
-                self.assertTrue(mascot.capture_action.isEnabled())
-                self.assertTrue(mascot.ocr_action.isEnabled())
+                self.assertTrue(mascot.record_button.isHidden())  # an action folds the buttons again
+                self.assertEqual(mascot.record_button.text(), 'Detener')
+                self.assertTrue(mascot.capture_button.isEnabled())
+                self.assertTrue(mascot.ocr_button.isEnabled())
                 self.assertFalse(mascot.timer_label.isHidden())
 
                 with mock.patch.object(window, 'mark_moment') as mark, mock.patch.object(window, 'capture_ocr') as ocr:
-                    mascot.capture_action.trigger()
-                    mascot.ocr_action.trigger()
+                    mascot.capture_button.click()
+                    mascot.ocr_button.click()
                 mark.assert_called_once_with(from_hotkey=True)
                 ocr.assert_called_once_with()
 
-                mascot.record_action.trigger()  # stops
+                mascot.record_button.click()  # stops
                 OcrAttendeeTests._wait_until_stopped(self, window)
                 self.assertIsNone(window.recorder)
                 self.assertIs(window.astro.state, AstroState.SUCCESS)  # stored, no transcription configured
                 self.assertEqual(mascot.bubble.text(), '¡Reunión guardada!')
-                self.assertEqual(mascot.record_action.text(), 'Grabar reunión')
+                self.assertEqual(mascot.record_button.text(), 'Grabar')
 
                 window.showMinimized()
-                mascot.open_action.trigger()
-                self.assertFalse(window.isMinimized())
-
                 mascot.mousePressEvent(_mouse(QEvent.Type.MouseButtonPress, mascot, 10, 10))
                 mascot.mouseReleaseEvent(_mouse(QEvent.Type.MouseButtonRelease, mascot, 10, 10))
-                self.assertTrue(mascot.menu.isVisible())  # a click opens the menu
-                mascot.menu.hide()
+                mascot.mouseDoubleClickEvent(_mouse(QEvent.Type.MouseButtonDblClick, mascot, 10, 10))
+                self.assertFalse(window.isMinimized())  # a double click opens Teams Lite
+                self._wait_for(lambda: False, seconds=0.6)  # longer than the double-click interval
+                self.assertTrue(mascot.record_button.isHidden())  # ...and does not unfold the buttons
             finally:
                 self._close(window)
             self.assertTrue(mascot.isHidden())  # closing Teams Lite closes its mascot
@@ -484,10 +502,9 @@ class MascotUiTests(unittest.TestCase):
                 self.assertTrue(mascot.frame_timer.isActive())
                 page.motion_checkbox.setChecked(False)
                 self.assertFalse(mascot.frame_timer.isActive())  # a still frame: no animation work
-                self.assertFalse(mascot.motion_action.isChecked())
-                mascot.motion_action.trigger()  # the menu toggles it back
-                self.assertTrue(load_mascot_settings(d).motion)
-                self.assertTrue(page.motion_checkbox.isChecked())
+                self.assertFalse(load_mascot_settings(d).motion)
+                page.motion_checkbox.setChecked(True)
+                self.assertTrue(mascot.frame_timer.isActive())
 
                 page.size_combo.setCurrentIndex(page.size_combo.findData(4))
                 self.assertEqual(mascot.sprite.pixmap().width(), 64 * 4)
@@ -500,7 +517,7 @@ class MascotUiTests(unittest.TestCase):
 
                 page.sound_checkbox.setChecked(False)
                 window.quick_start_recording()
-                mascot.capture_action.trigger()
+                mascot.capture_button.click()
                 beep.assert_not_called()  # effects muted
             finally:
                 self._close(window)

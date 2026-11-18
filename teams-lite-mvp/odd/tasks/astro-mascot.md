@@ -19,7 +19,7 @@ Branch: feat/mascot-quick-actions (not delivered yet) · Delivery: ask-on-risk �
 - T4 [S4,S6] inline — docs/astro-sprites.md (contract + prompts for Astro and an original fire dragon), README — done (structural readback)
 
 - T5 [S7] inline — built-in characters: package assets teams_lite/assets/mascots/{astro,brasa} (user folder overrides), PyInstaller datas — done, RED (no BUILTIN_DIR) → GREEN; order per state: data/mascots (custom) → package assets (builtin) → placeholder; packaging test pins the spec datas and the 16 PNGs
-- T6 [S8] inline — radial actions around the mascot (left/right/below), no settings on the mascot, double click opens the app — pending
+- T6 [S8] inline — radial actions around the mascot (left/right/below), no settings on the mascot, double click opens the app — done, RED (menu, no buttons) → GREEN; Grabar/Detener left, Capturar right, OCR below, sprite stays put on screen (window moves by the layout delta), single click waits the double-click interval, buttons fold after an action or 6 s, short fade only with motion on; menu and its sound/motion toggles removed; offscreen capture of Astro and Brasa folded, unfolded and recording
 
 ## Log
 - L1 (2026-11-17): user pasted "PROMPT: Astro — Mascota Pixel Art para reuniones" (sections 1-8) with a reference sheet image (Astro hero + six poses: IDLE, MOVIENDO, GRABANDO, DETENER, CAPTURAR, LISTO). Answer: "Motor ahora, sprites tuyos (Recommended)".

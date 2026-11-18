@@ -200,6 +200,30 @@ QLabel#adminSummary {
     font-size: 12px;
     font-weight: 600;
 }
+QPushButton#astroRecord, QPushButton#astroAction {
+    min-height: 32px;
+    padding: 0 12px;
+    border: 2px solid #1B1440;
+    border-radius: 0;
+    font-size: 12px;
+    font-weight: 700;
+}
+QPushButton#astroRecord {
+    background: #F04848;
+    color: #FFFFFF;
+}
+QPushButton#astroRecord[recording="true"] {
+    background: #2A2A5C;
+    color: #FFFFFF;
+}
+QPushButton#astroAction {
+    background: #4FD1E8;
+    color: #10103A;
+}
+QPushButton#astroAction:disabled {
+    background: #3A4250;
+    color: #8A97A6;
+}
 QLabel#astroBubble {
     padding: 6px 10px;
     background: #F4F1FF;
@@ -1159,8 +1183,6 @@ class MainWindow(QMainWindow):
         self._last_error = ""
         self.mascot = MascotWidget(self.astro)
         self.mascot.setStyleSheet(self.styleSheet())  # a separate top-level window: it does not inherit it
-        self.mascot.sound_toggled.connect(lambda on: self._mascot_flag("sound", on))
-        self.mascot.motion_toggled.connect(lambda on: self._mascot_flag("motion", on))
         self.mascot.record_requested.connect(self._toggle_recording_from_mascot)
         self.mascot.capture_requested.connect(lambda: self.mark_moment(from_hotkey=True))
         self.mascot.ocr_requested.connect(lambda: self.capture_ocr())
@@ -1182,7 +1204,6 @@ class MainWindow(QMainWindow):
         self.mascot.set_animations(animations)
         self.mascot.set_scale(settings.scale)
         self.mascot.set_motion(settings.motion)
-        self.mascot.set_sound(settings.sound)
         self.mascot_page.set_sprite_problems(problems, any(a.source != "placeholder" for a in animations.values()))
         self._mascot_character = settings.character
 
@@ -1193,12 +1214,6 @@ class MainWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001 - the mascot is decoration over real work
             print(f"Astro: {exc}", file=sys.stderr)
 
-    def _mascot_flag(self, name: str, value: bool) -> None:
-        """Sound or motion switched from Astro's own menu."""
-        self.mascot_page.set_flag(name, value)
-        save_mascot_settings(self.store.root, self.mascot_page.settings())
-        if name == "motion":
-            self.mascot.set_motion(value)
 
     def _place_mascot_by_default(self) -> None:
         screen = QApplication.primaryScreen()
@@ -1230,7 +1245,6 @@ class MainWindow(QMainWindow):
         else:
             self.mascot.set_scale(settings.scale)
             self.mascot.set_motion(settings.motion)
-            self.mascot.set_sound(settings.sound)
         self.mascot.setVisible(settings.enabled)
         if settings.position is None:
             self._place_mascot_by_default()
@@ -1913,7 +1927,7 @@ class MainWindow(QMainWindow):
         mascot = getattr(self, "mascot", None)
         if mascot is not None:
             self._astro_safely(mascot.set_recording, recording, getattr(self, "_recording_origin", None))
-            mascot.record_action.setEnabled(not finalizing)
+            mascot.record_button.setEnabled(not finalizing)
 
     def start_recording(self) -> None:
         """Record with the title, organization and project chosen in the recording card."""

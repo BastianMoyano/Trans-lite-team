@@ -4,16 +4,18 @@ from __future__ import annotations
 from pathlib import Path
 import time
 
-from PySide6.QtCore import QPoint, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QPoint, QPropertyAnimation, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QPixmap
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QFrame,
+    QGraphicsOpacityEffect,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QMenu,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -26,7 +28,9 @@ from .mascot import DEFAULT_TITLE, SCALES, MascotSettings
 from .moments import format_offset
 from .storage import Storage
 
-DRAG_THRESHOLD = 4  # pixels: a smaller movement is a click that opens the menu
+DRAG_THRESHOLD = 4  # pixels: a smaller movement is a click that unfolds the actions
+ACTIONS_SECONDS = 6  # unfolded actions fold back on their own
+FADE_MS = 160
 BUBBLE_SECONDS = 4.0
 POLL_MS = 400  # reactions (capture, success, error) expire on their own; checked this often
 SIZE_LABELS = {2: "Pequeña", 3: "Mediana", 4: "Grande", 5: "Muy grande"}
@@ -39,15 +43,18 @@ def mascot_face(size: int) -> QPixmap:
 
 
 class MascotWidget(QWidget):
-    """Astro floats over Teams: its look follows the app's real state and a click opens its actions."""
+    """Astro floats over Teams: its look follows the app's real state.
+
+    A click unfolds its actions around it (Grabar/Detener on the left, Capturar on the right, OCR
+    below) without moving Astro; a double click opens Teams Lite; a drag moves it. Its settings live
+    in the Mascota section, not on Astro.
+    """
 
     record_requested = Signal()
     capture_requested = Signal()
     ocr_requested = Signal()
     open_requested = Signal()
     moved = Signal(int, int)
-    sound_toggled = Signal(bool)
-    motion_toggled = Signal(bool)
 
     def __init__(self, machine: AstroMachine, parent: QWidget | None = None):
         # WindowDoesNotAcceptFocus: clicking Astro never takes the keyboard away from Teams.
@@ -66,39 +73,46 @@ class MascotWidget(QWidget):
         self._press: QPoint | None = None
         self._drag_offset: QPoint | None = None
         self._dragging = False
+        self._fades: list[QPropertyAnimation] = []
 
-        layout = QVBoxLayout(self)
+        layout = QGridLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(2)
+        layout.setHorizontalSpacing(6)
+        layout.setVerticalSpacing(2)
         self.bubble = QLabel()
         self.bubble.setObjectName("astroBubble")
         self.bubble.setWordWrap(True)
         self.bubble.setMaximumWidth(220)
         self.bubble.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.bubble.hide()
-        layout.addWidget(self.bubble, 0, Qt.AlignmentFlag.AlignHCenter)
+        layout.addWidget(self.bubble, 0, 0, 1, 3, Qt.AlignmentFlag.AlignHCenter)
         self.sprite = QLabel()
-        self.sprite.setToolTip("Astro · clic para sus acciones · arrástralo para moverlo")
+        self.sprite.setToolTip("Astro · clic: acciones · doble clic: abrir Teams Lite · arrastrar: mover")
         self.sprite.setCursor(Qt.CursorShape.PointingHandCursor)
-        layout.addWidget(self.sprite, 0, Qt.AlignmentFlag.AlignHCenter)
+        layout.addWidget(self.sprite, 1, 1, Qt.AlignmentFlag.AlignCenter)
         self.timer_label = QLabel()
         self.timer_label.setObjectName("mascotTimer")
         self.timer_label.hide()
-        layout.addWidget(self.timer_label, 0, Qt.AlignmentFlag.AlignHCenter)
+        layout.addWidget(self.timer_label, 2, 1, Qt.AlignmentFlag.AlignHCenter)
 
-        self.menu = QMenu(self)
-        self.record_action = self.menu.addAction("Grabar reunión", self.record_requested.emit)
-        self.capture_action = self.menu.addAction("Capturar reunión", self.capture_requested.emit)
-        self.ocr_action = self.menu.addAction("Leer asistentes (OCR)", self.ocr_requested.emit)
-        self.menu.addSeparator()
-        self.open_action = self.menu.addAction("Abrir Teams Lite", self.open_requested.emit)
-        self.menu.addSeparator()
-        self.sound_action = self.menu.addAction("Efectos de sonido")
-        self.sound_action.setCheckable(True)
-        self.sound_action.toggled.connect(self.sound_toggled.emit)
-        self.motion_action = self.menu.addAction("Animaciones y movimiento")
-        self.motion_action.setCheckable(True)
-        self.motion_action.toggled.connect(self.motion_toggled.emit)
+        self.record_button = QPushButton("Grabar")
+        self.record_button.setObjectName("astroRecord")
+        self.record_button.setToolTip("Graba al instante con el nombre, la organización y el proyecto por defecto")
+        self.capture_button = QPushButton("Capturar")
+        self.capture_button.setObjectName("astroAction")
+        self.capture_button.setToolTip("Marca el momento con un pantallazo de la reunión (como Ctrl+Alt+M)")
+        self.ocr_button = QPushButton("OCR")
+        self.ocr_button.setObjectName("astroAction")
+        self.ocr_button.setToolTip("Lee los asistentes visibles en Teams")
+        layout.addWidget(self.record_button, 1, 0, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
+        layout.addWidget(self.capture_button, 1, 2, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(self.ocr_button, 3, 1, Qt.AlignmentFlag.AlignHCenter)
+        self._actions = (self.record_button, self.capture_button, self.ocr_button)
+        for button, signal in zip(self._actions, (self.record_requested, self.capture_requested, self.ocr_requested)):
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.clicked.connect(signal.emit)
+            button.clicked.connect(lambda _checked=False: self.set_actions_open(False))
+            button.hide()
 
         self.frame_timer = QTimer(self)
         self.frame_timer.timeout.connect(self._next_frame)
@@ -110,8 +124,61 @@ class MascotWidget(QWidget):
         self._clock.timeout.connect(self._tick)
         self._bubble_timer = QTimer(self)
         self._bubble_timer.setSingleShot(True)
-        self._bubble_timer.timeout.connect(self.bubble.hide)
+        self._bubble_timer.timeout.connect(lambda: self._keep_sprite_still(self.bubble.hide))
+        # A single click waits out the double-click interval: a double click must not unfold actions.
+        self._click_timer = QTimer(self)
+        self._click_timer.setSingleShot(True)
+        self._click_timer.setInterval(QApplication.doubleClickInterval())
+        self._click_timer.timeout.connect(lambda: self.set_actions_open(not self.actions_open()))
+        self._fold_timer = QTimer(self)
+        self._fold_timer.setSingleShot(True)
+        self._fold_timer.setInterval(ACTIONS_SECONDS * 1000)
+        self._fold_timer.timeout.connect(lambda: self.set_actions_open(False))
         self.set_recording(False)
+
+    # Actions around Astro ---------------------------------------------------------------------
+    def actions_open(self) -> bool:
+        return not self.record_button.isHidden()
+
+    def set_actions_open(self, open_: bool) -> None:
+        if open_ == self.actions_open():
+            return
+
+        def change() -> None:
+            for button in self._actions:
+                button.setVisible(open_)
+
+        self._keep_sprite_still(change)
+        if open_:
+            self._fold_timer.start()
+            if self._motion:
+                self._fade_in()
+        else:
+            self._fold_timer.stop()
+
+    def _fade_in(self) -> None:
+        """A short, quiet fade: the buttons unfold instead of popping in."""
+        self._fades = []
+        for button in self._actions:
+            effect = QGraphicsOpacityEffect(button)
+            button.setGraphicsEffect(effect)
+            fade = QPropertyAnimation(effect, b"opacity", self)
+            fade.setDuration(FADE_MS)
+            fade.setStartValue(0.0)
+            fade.setEndValue(1.0)
+            fade.finished.connect(lambda button=button: button.setGraphicsEffect(None))
+            fade.start()
+            self._fades.append(fade)
+
+    def _keep_sprite_still(self, change) -> None:
+        """Apply a layout change and move the window so Astro stays exactly where it was on screen."""
+        before = self.sprite.mapToGlobal(QPoint(0, 0))
+        change()
+        self.layout().activate()
+        self.adjustSize()
+        after = self.sprite.mapToGlobal(QPoint(0, 0))
+        if after != before:
+            self.move(self.pos() + before - after)
 
     # Appearance -------------------------------------------------------------------------------
     def set_animations(self, animations: dict[AstroState, Animation]) -> None:
@@ -121,20 +188,12 @@ class MascotWidget(QWidget):
 
     def set_scale(self, scale: int) -> None:
         self._scale = scale if scale in SCALES else 3
-        self._render()
+        self._keep_sprite_still(self._render)
 
     def set_motion(self, enabled: bool) -> None:
         self._motion = enabled
-        self.motion_action.blockSignals(True)
-        self.motion_action.setChecked(enabled)
-        self.motion_action.blockSignals(False)
         self._restart_frames()
         self._render()
-
-    def set_sound(self, enabled: bool) -> None:
-        self.sound_action.blockSignals(True)
-        self.sound_action.setChecked(enabled)
-        self.sound_action.blockSignals(False)
 
     def refresh(self) -> None:
         """Show the machine's current state; called on every event and while a reaction is shown."""
@@ -147,8 +206,7 @@ class MascotWidget(QWidget):
         message = self.machine.message
         if message and message != self._last_message:
             self.bubble.setText(message)
-            self.bubble.show()
-            self.adjustSize()
+            self._keep_sprite_still(self.bubble.show)
             seconds = BUBBLE_SECONDS * (1.5 if state is AstroState.ERROR else 1)
             self._bubble_timer.start(int(seconds * 1000))
         self._last_message = message
@@ -170,20 +228,21 @@ class MascotWidget(QWidget):
             return
         frame = animation.frames[self._frame % len(animation.frames)] if self._motion else animation.frames[0]
         self.sprite.setPixmap(QPixmap.fromImage(scale_pixels(frame, self._scale)))
-        self.adjustSize()
 
     def set_recording(self, recording: bool, started_monotonic: float | None = None) -> None:
-        self.record_action.setText("Detener grabación" if recording else "Grabar reunión")
-        self.capture_action.setEnabled(recording)
-        self.ocr_action.setEnabled(recording)
+        self.record_button.setText("Detener" if recording else "Grabar")
+        self.record_button.setProperty("recording", recording)
+        self.record_button.style().unpolish(self.record_button)
+        self.record_button.style().polish(self.record_button)
+        self.capture_button.setEnabled(recording)
+        self.ocr_button.setEnabled(recording)
         self._started = started_monotonic if recording else None
-        self.timer_label.setVisible(recording)
         if recording:
             self._tick()
             self._clock.start()
         else:
             self._clock.stop()
-        self.adjustSize()
+        self._keep_sprite_still(lambda: self.timer_label.setVisible(recording))
 
     def _tick(self) -> None:
         if self._started is not None:
@@ -200,7 +259,7 @@ class MascotWidget(QWidget):
         self._poll.stop()
         self.frame_timer.stop()
 
-    # A click opens the menu; a drag moves Astro (MOVING while dragged) -----------------------
+    # Click: actions · double click: Teams Lite · drag: move (MOVING while dragged) -------------
     def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt API
         if event.button() == Qt.MouseButton.LeftButton:
             self._press = event.globalPosition().toPoint()
@@ -213,6 +272,7 @@ class MascotWidget(QWidget):
             position = event.globalPosition().toPoint()
             if not self._dragging and (position - self._press).manhattanLength() >= DRAG_THRESHOLD:
                 self._dragging = True
+                self._click_timer.stop()
                 self.machine.move_started()
             if self._dragging:
                 self.move(position - self._drag_offset)
@@ -224,9 +284,14 @@ class MascotWidget(QWidget):
                 self.machine.move_finished()
                 self.moved.emit(self.x(), self.y())
             else:
-                self.menu.popup(event.globalPosition().toPoint())
+                self._click_timer.start()
             self._press, self._dragging = None, False
         super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802 - Qt API
+        self._click_timer.stop()
+        self.open_requested.emit()
+        super().mouseDoubleClickEvent(event)
 
 
 class MascotSettingsPage(QWidget):
@@ -250,8 +315,9 @@ class MascotSettingsPage(QWidget):
         title.setObjectName("pageTitle")
         hint = QLabel(
             "Astro flota sobre Teams y muestra lo que pasa: grabando, capturando, procesando o si algo falló. "
-            "Haz clic en Astro para grabar o detener al instante (sin pedir nombre, organización ni proyecto: "
-            "usa los valores de esta sección), capturar la reunión o leer los asistentes."
+            "Haz clic en Astro para desplegar sus acciones: Grabar o Detener a la izquierda (al instante, sin pedir "
+            "nombre, organización ni proyecto: usa los valores de esta sección), Capturar a la derecha y OCR abajo. "
+            "Doble clic abre Teams Lite."
         )
         hint.setObjectName("fieldHint")
         hint.setWordWrap(True)
@@ -363,14 +429,6 @@ class MascotSettingsPage(QWidget):
             )
         else:
             self.sprite_notice.setText("")
-
-    def set_flag(self, name: str, value: bool) -> None:
-        """Mirror a change made from Astro's menu without saving it twice."""
-        checkbox = {"sound": self.sound_checkbox, "motion": self.motion_checkbox}[name]
-        checkbox.blockSignals(True)
-        checkbox.setChecked(value)
-        checkbox.blockSignals(False)
-        setattr(self._settings, name, value)
 
     def reload_placements(self) -> None:
         """Organizations or projects changed elsewhere: refresh the choices, keep the selection.

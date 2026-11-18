@@ -1,7 +1,9 @@
 # Mascot spritesheets
 
-Teams Lite ships Astro as a simple code-drawn pixel-art placeholder. Your own drawings replace it
-without touching code: put them in a character folder and pick the character in **Mascota**.
+Teams Lite ships two characters, Astro and Brasa (`src/teams_lite/assets/mascots/`). Your own drawings
+replace a shipped character, state by state, or add a new one without touching code: put them in a
+character folder and pick the character in **Mascota**. A state with no drawing anywhere uses a simple
+code-drawn placeholder.
 
 ## Where the files go
 
