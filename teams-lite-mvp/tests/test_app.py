@@ -430,6 +430,26 @@ class MascotUiTests(unittest.TestCase):
                 self._close(window)
             self.assertTrue(mascot.isHidden())  # closing Teams Lite closes its mascot
 
+    def test_astro_bubble_shows_the_whole_message(self):
+        with tempfile.TemporaryDirectory() as d:
+            window = self._window(d)
+            try:
+                bubble = window.mascot.bubble
+                for message in ('Listo para comenzar',
+                                'Teams está minimizado: restaura su ventana (puede quedar en otro monitor '
+                                'o detrás de otras).'):
+                    with self.subTest(message=message):
+                        window.astro.error(message)
+                        self.application.processEvents()
+                        self.assertEqual(bubble.text(), message)
+                        self.assertGreaterEqual(bubble.height(), bubble.heightForWidth(bubble.width()))
+                        self.assertLessEqual(bubble.width(), 240)
+                        self.assertGreaterEqual(bubble.width(), min(240, bubble.fontMetrics()
+                                                                    .horizontalAdvance('Listo para comenzar')))
+                        self.assertGreaterEqual(window.mascot.width(), bubble.width())  # never clipped by the window
+            finally:
+                window.close()
+
     def test_astro_mirrors_real_events(self):
         from teams_lite.astro import AstroState
         with tempfile.TemporaryDirectory() as d, \

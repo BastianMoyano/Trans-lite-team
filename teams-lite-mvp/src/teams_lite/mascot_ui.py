@@ -32,6 +32,7 @@ DRAG_THRESHOLD = 4  # pixels: a smaller movement is a click that unfolds the act
 ACTIONS_SECONDS = 6  # unfolded actions fold back on their own
 FADE_MS = 160
 BUBBLE_SECONDS = 4.0
+BUBBLE_MIN_WIDTH, BUBBLE_MAX_WIDTH = 60, 240
 POLL_MS = 400  # reactions (capture, success, error) expire on their own; checked this often
 SIZE_LABELS = {2: "Pequeña", 3: "Mediana", 4: "Grande", 5: "Muy grande"}
 
@@ -82,7 +83,6 @@ class MascotWidget(QWidget):
         self.bubble = QLabel()
         self.bubble.setObjectName("astroBubble")
         self.bubble.setWordWrap(True)
-        self.bubble.setMaximumWidth(220)
         self.bubble.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.bubble.hide()
         layout.addWidget(self.bubble, 0, 0, 1, 3, Qt.AlignmentFlag.AlignHCenter)
@@ -205,11 +205,21 @@ class MascotWidget(QWidget):
         self._render()
         message = self.machine.message
         if message and message != self._last_message:
-            self.bubble.setText(message)
-            self._keep_sprite_still(self.bubble.show)
+            self._keep_sprite_still(lambda: self._show_bubble(message))
             seconds = BUBBLE_SECONDS * (1.5 if state is AstroState.ERROR else 1)
             self._bubble_timer.start(int(seconds * 1000))
         self._last_message = message
+
+    def _show_bubble(self, message: str) -> None:
+        """Size the bubble for its text: a wrapped label in a frameless window does not grow by itself."""
+        self.bubble.setText(message)
+        self.bubble.ensurePolished()
+        chrome = self.bubble.width() - self.bubble.contentsRect().width()  # padding and border
+        natural = self.bubble.fontMetrics().horizontalAdvance(message) + chrome + 2
+        width = max(BUBBLE_MIN_WIDTH, min(BUBBLE_MAX_WIDTH, natural))
+        height = self.bubble.heightForWidth(width)
+        self.bubble.setFixedSize(width, height if height > 0 else self.bubble.sizeHint().height())
+        self.bubble.show()
 
     def _restart_frames(self) -> None:
         animation = self._animations.get(self._shown_state) if self._shown_state else None
