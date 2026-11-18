@@ -116,7 +116,7 @@ def _tesseract_recognizer(tesseract_cmd: str | None) -> Callable[[Path], str]:
         from PIL import Image
         import pytesseract
     except ImportError as exc:
-        raise RuntimeError("Instala Teams Lite con el complemento 'ocr' e instala Tesseract OCR.") from exc
+        raise RuntimeError("Instala AstroMeet con el complemento 'ocr' e instala Tesseract OCR.") from exc
     tesseract_cmd = tesseract_cmd or find_tesseract()
     if tesseract_cmd:
         pytesseract.pytesseract.tesseract_cmd = tesseract_cmd

@@ -4,7 +4,8 @@ from PyInstaller.utils.hooks import collect_all
 
 
 root = Path(SPECPATH)
-datas = []
+# Built-in mascots (Astro, Brasa): astro_sprites.py looks for them next to the package.
+datas = [(str(root / "src" / "teams_lite" / "assets"), "teams_lite/assets")]
 binaries = []
 hiddenimports = []
 # Only what the app runs: Parakeet (onnx_asr + onnxruntime) and audio capture (soundcard).
@@ -53,6 +54,7 @@ exe = EXE(
     strip=False,
     upx=False,  # UPX is known to corrupt torch/onnxruntime DLLs
     console=False,
+    icon=str(root / "src" / "teams_lite" / "assets" / "branding" / "astromeet.ico"),
 )
 bundle = COLLECT(
     exe,

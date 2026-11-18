@@ -159,11 +159,11 @@ def _timestamp(value, *, optional: bool = False) -> bool:
 def _check_manifest(manifest, audio_members: set[str]) -> None:
     invalid = PackageError("El paquete de reunión está dañado o incompleto")
     if not isinstance(manifest, dict) or manifest.get("format") != PACKAGE_FORMAT:
-        raise PackageError("El archivo no es un paquete de reunión de Teams Lite")
+        raise PackageError("El archivo no es un paquete de reunión de AstroMeet")
     if not _integer(manifest.get("version"), 1):
         raise invalid
     if manifest["version"] > PACKAGE_VERSION:
-        raise PackageError("El paquete se creó con una versión más nueva de Teams Lite; actualiza la aplicación")
+        raise PackageError("El paquete se creó con una versión más nueva de AstroMeet; actualiza la aplicación")
     meeting = manifest.get("meeting")
     if not (isinstance(meeting, dict) and _text(meeting.get("title")) and meeting["title"].strip()
             and _timestamp(meeting.get("started_utc")) and _timestamp(meeting.get("ended_utc"), optional=True)
@@ -225,7 +225,7 @@ def _open(path: str | Path) -> tuple[zipfile.ZipFile, dict, list[tuple[zipfile.Z
         try:
             manifest = json.loads(archive.read(MANIFEST).decode("utf-8"))
         except KeyError as exc:
-            raise PackageError("El archivo no es un paquete de reunión de Teams Lite") from exc
+            raise PackageError("El archivo no es un paquete de reunión de AstroMeet") from exc
         except (UnicodeDecodeError, ValueError) as exc:
             raise PackageError("El paquete de reunión está dañado o incompleto") from exc
         _check_manifest(manifest, audio_members)

@@ -1,4 +1,4 @@
-; Teams Lite Windows installer (Inno Setup 6.5+).
+; AstroMeet Windows installer (Inno Setup 6.5+).
 ; Build with build_windows.ps1 -Installer, which passes AppVersion and SourceDir.
 ; Per-user install: no admin rights. Meetings and models live in %LOCALAPPDATA%\TeamsLite,
 ; outside OneDrive and outside the program folder, so upgrades never touch them.
@@ -19,9 +19,9 @@
 
 [Setup]
 AppId={{6F1D2C3B-8E4A-4B7D-9C21-5A7E3F0B9D42}
-AppName=Teams Lite
+AppName=AstroMeet
 AppVersion={#AppVersion}
-AppVerName=Teams Lite {#AppVersion}
+AppVerName=AstroMeet {#AppVersion}
 DefaultDirName={localappdata}\Programs\TeamsLite
 DisableDirPage=yes
 DisableProgramGroupPage=yes
@@ -36,7 +36,7 @@ WizardStyle=modern
 ; Room for the component list under the download progress.
 WizardSizePercent=120
 UninstallDisplayIcon={app}\TeamsLite.exe
-UninstallDisplayName=Teams Lite
+UninstallDisplayName=AstroMeet
 ; The Parakeet model (~2.4 GB) and Tesseract OCR are downloaded during installation.
 ExtraDiskSpaceRequired=2700000000
 
@@ -55,11 +55,11 @@ Type: filesandordirs; Name: "{app}\_internal"
 Source: "{#SourceDir}\*"; Excludes: "config.json"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{autoprograms}\Teams Lite"; Filename: "{app}\TeamsLite.exe"; WorkingDir: "{app}"
-Name: "{autodesktop}\Teams Lite"; Filename: "{app}\TeamsLite.exe"; Tasks: desktopicon; WorkingDir: "{app}"
+Name: "{autoprograms}\AstroMeet"; Filename: "{app}\TeamsLite.exe"; WorkingDir: "{app}"
+Name: "{autodesktop}\AstroMeet"; Filename: "{app}\TeamsLite.exe"; Tasks: desktopicon; WorkingDir: "{app}"
 
 [Run]
-Filename: "{app}\TeamsLite.exe"; Description: "Abrir Teams Lite"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\TeamsLite.exe"; Description: "Abrir AstroMeet"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
 Type: files; Name: "{app}\config.json"
@@ -248,7 +248,7 @@ begin
 
   DownloadPage := CreateDownloadPage(
     'Instalando componentes',
-    'Teams Lite descarga lo que necesita para transcribir y leer asistentes. Solo la primera vez.',
+    'AstroMeet descarga lo que necesita para transcribir y leer asistentes. Solo la primera vez.',
     @OnDownloadProgress);
   DownloadPage.ShowBaseNameInsteadOfUrl := True;
 
@@ -317,7 +317,7 @@ begin
   except
     Log('Tesseract download failed: ' + GetExceptionMessage);
     EndComponent;
-    // Stopping this optional download skips only Tesseract; Teams Lite still installs.
+    // Stopping this optional download skips only Tesseract; AstroMeet still installs.
     if DownloadPage.AbortedByUser then
       SetStatus(TesseractStatus, 'Omitido: descarga detenida (puedes instalarlo después)', clMaroon)
     else
@@ -394,7 +394,7 @@ begin
           SetStatus(TesseractStatus, 'Omitido: error inesperado (puedes instalarlo después)', clMaroon);
         end;
       TotalBar.Position := TotalBar.Max;
-      DownloadPage.SetText('Componentes listos.', 'A continuación se instala Teams Lite.');
+      DownloadPage.SetText('Componentes listos.', 'A continuación se instala AstroMeet.');
       if not WizardSilent then
         Sleep(1500); // let the user see the final state of every component
     except

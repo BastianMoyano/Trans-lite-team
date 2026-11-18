@@ -9,6 +9,29 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class PackagingTests(unittest.TestCase):
+    def test_bundle_ships_the_built_in_mascots(self):
+        spec = (ROOT / "TeamsLite.spec").read_text(encoding="utf-8")
+        self.assertIn('(str(root / "src" / "teams_lite" / "assets"), "teams_lite/assets")', spec)
+        for character in ("astro", "brasa"):
+            for state in ("idle", "moving", "recording", "stopping", "capturing", "processing", "success", "error"):
+                self.assertTrue((ROOT / "src" / "teams_lite" / "assets" / "mascots" / character
+                                 / f"{character}_{state}.png").is_file(), (character, state))
+
+    def test_bundle_ships_the_astromeet_visible_brand(self):
+        assets = ROOT / "src" / "teams_lite" / "assets" / "branding"
+        self.assertTrue((assets / "astromeet-icon.png").is_file())
+        self.assertTrue((assets / "astromeet.ico").is_file())
+        spec = (ROOT / "TeamsLite.spec").read_text(encoding="utf-8")
+        self.assertIn('icon=str(root / "src" / "teams_lite" / "assets" / "branding" / "astromeet.ico")', spec)
+        self.assertIn('name="TeamsLite"', spec)  # compatibility identifier stays unchanged
+
+    def test_readme_presents_the_astromeet_identity(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("![AstroMeet — Tu compañero inteligente de reuniones](docs/images/astromeet-overview.png)", readme)
+        self.assertIn("Cada reunión tiene una historia. Astro la recuerda.", readme)
+        self.assertIn("Grabación · Capturas · Transcripción · Minutas", readme)
+        self.assertTrue((ROOT / "docs" / "images" / "astromeet-overview.png").is_file())
+
     def _spec_entry_script(self) -> Path:
         spec = (ROOT / "TeamsLite.spec").read_text(encoding="utf-8")
         match = re.search(r"Analysis\(\s*\[str\(root(?P<parts>(?:\s*/\s*\"[^\"]+\")+)\)\]", spec)
@@ -60,7 +83,14 @@ class InstallerTests(unittest.TestCase):
         self.assertRegex(self.script, r'Source: "\{#SourceDir\}\\\*"; Excludes: "config\.json"')
 
     def test_creates_a_desktop_shortcut(self):
-        self.assertRegex(self.script, r'(?m)^Name: "\{autodesktop\}\\Teams Lite"; Filename: "\{app\}\\TeamsLite\.exe"; Tasks: desktopicon')
+        self.assertRegex(self.script, r'(?m)^Name: "\{autodesktop\}\\AstroMeet"; Filename: "\{app\}\\TeamsLite\.exe"; Tasks: desktopicon')
+
+    def test_uses_astromeet_as_the_visible_product_name_only(self):
+        self.assertRegex(self.script, r"(?m)^AppName=AstroMeet$")
+        self.assertRegex(self.script, r"(?m)^AppVerName=AstroMeet \{#AppVersion\}$")
+        self.assertRegex(self.script, r"(?m)^UninstallDisplayName=AstroMeet$")
+        self.assertIn(r"DefaultDirName={localappdata}\Programs\TeamsLite", self.script)
+        self.assertIn(r'Filename: "{app}\TeamsLite.exe"', self.script)
 
     def test_config_leaves_tesseract_to_runtime_detection(self):
         # A path written at install time goes stale when Tesseract is added, fails or moves later.
