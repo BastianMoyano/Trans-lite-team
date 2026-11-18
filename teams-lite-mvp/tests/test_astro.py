@@ -68,6 +68,14 @@ class AstroMachineTests(unittest.TestCase):
         self.wait(2)
         self.assertIs(self.astro.state, AstroState.RECORDING)
 
+    def test_a_successful_capture_can_say_what_it_captured(self):
+        self.astro.recording_started()
+        self.astro.capture_finished(True, 'OCR: 3 asistentes')
+        self.assertIs(self.astro.state, AstroState.CAPTURING)
+        self.assertEqual(self.astro.message, 'OCR: 3 asistentes')
+        self.astro.capture_finished(True)
+        self.assertEqual(self.astro.message, 'Captura realizada')
+
     def test_errors_show_a_readable_message_and_never_end_the_recording(self):
         astro = self.astro
         astro.recording_started()

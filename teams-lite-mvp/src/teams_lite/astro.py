@@ -48,6 +48,7 @@ class AstroMachine:
         self._reaction: AstroState | None = None
         self._reaction_until = 0.0
         self._error_message = ""
+        self._capture_message = ""
 
     # What is really going on, without the short reactions on top.
     def _base(self) -> AstroState:
@@ -75,6 +76,8 @@ class AstroMachine:
         state = self.state
         if state is AstroState.ERROR:
             return self._error_message
+        if state is AstroState.CAPTURING and self._capture_message:
+            return self._capture_message
         if state is AstroState.PROCESSING and self._progress is not None:
             return f"{MESSAGES[state]} · {round(self._progress * 100)} %"
         return MESSAGES[state]
@@ -119,7 +122,9 @@ class AstroMachine:
         self._changed()
 
     def capture_finished(self, ok: bool, message: str | None = None) -> None:
+        """A screenshot or OCR read finished; `message` says what was captured or what went wrong."""
         if ok:
+            self._capture_message = (message or "").strip()
             self._react(AstroState.CAPTURING)
         else:
             self._error(message)

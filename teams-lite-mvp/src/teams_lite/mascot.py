@@ -5,11 +5,15 @@ from dataclasses import asdict, dataclass
 import json
 import os
 from pathlib import Path
+import re
 
 from .storage import Storage
 
 MASCOT_FILE = "mascot.json"
 DEFAULT_TITLE = "Reunión rápida"
+DEFAULT_CHARACTER = "astro"
+SCALES = (2, 3, 4, 5)  # whole-number pixel scales keep pixel art sharp
+_CHARACTER = re.compile(r"[\w-]{1,40}")
 
 
 @dataclass
@@ -19,6 +23,10 @@ class MascotSettings:
     organization_id: str | None = None
     project_id: str | None = None
     position: tuple[int, int] | None = None  # top-left corner on screen, remembered after a drag
+    sound: bool = True  # the short confirmation sound of quick captures
+    motion: bool = True  # animations; off shows a still frame of each state
+    scale: int = 3
+    character: str = DEFAULT_CHARACTER  # folder under data/mascots/
 
 
 def load_mascot_settings(data_root: str | Path) -> MascotSettings:
@@ -42,6 +50,13 @@ def load_mascot_settings(data_root: str | Path) -> MascotSettings:
     if (isinstance(position, list) and len(position) == 2
             and all(isinstance(value, int) and not isinstance(value, bool) for value in position)):
         settings.position = (position[0], position[1])
+    for flag in ("sound", "motion"):
+        if isinstance(raw.get(flag), bool):
+            setattr(settings, flag, raw[flag])
+    if raw.get("scale") in SCALES and not isinstance(raw.get("scale"), bool):
+        settings.scale = raw["scale"]
+    if isinstance(raw.get("character"), str) and _CHARACTER.fullmatch(raw["character"]):
+        settings.character = raw["character"]
     return settings
 
 

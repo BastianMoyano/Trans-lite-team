@@ -8,7 +8,8 @@ from unittest import mock
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, Qt
+from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication, QBoxLayout
 
 from teams_lite.app import APP_STYLESHEET, COLORS, _MEETING_ROLE, MainWindow
@@ -337,6 +338,15 @@ class QuickStartTests(unittest.TestCase):
                 self._close(window)
 
 
+def _mouse(kind, widget, x, y):
+    from PySide6.QtCore import QPointF
+    from PySide6.QtGui import QMouseEvent
+    local = QPointF(x, y)
+    return QMouseEvent(kind, local, widget.mapToGlobal(local), Qt.MouseButton.LeftButton,
+                       Qt.MouseButton.LeftButton if kind != QEvent.Type.MouseButtonRelease else Qt.MouseButton.NoButton,
+                       Qt.KeyboardModifier.NoModifier)
+
+
 class MascotUiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -350,7 +360,8 @@ class MascotUiTests(unittest.TestCase):
         window._show_error = mock.Mock(side_effect=AssertionError('no dialog expected'))
         return window
 
-    def test_mascot_floats_and_runs_the_quick_actions(self):
+    def test_astro_floats_and_runs_the_quick_actions_from_its_menu(self):
+        from teams_lite.astro import AstroState
         with tempfile.TemporaryDirectory() as d, mock.patch('teams_lite.app.Recorder', _FakeRecorder):
             window = self._window(d)
             try:
@@ -358,36 +369,142 @@ class MascotUiTests(unittest.TestCase):
                 self.assertFalse(mascot.isHidden())
                 self.assertTrue(mascot.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)
                 self.assertTrue(mascot.windowFlags() & Qt.WindowType.FramelessWindowHint)
-                self.assertEqual(mascot.record_button.text(), 'Grabar')
-                self.assertFalse(mascot.capture_button.isEnabled())
-                self.assertFalse(mascot.ocr_button.isEnabled())
+                self.assertTrue(mascot.windowFlags() & Qt.WindowType.WindowDoesNotAcceptFocus)
+                self.assertEqual(mascot.sprite.pixmap().width(), 32 * 3)  # placeholder at the default size
+                self.assertEqual([a.text() for a in mascot.menu.actions() if a.text()],
+                                 ['Grabar reunión', 'Capturar reunión', 'Leer asistentes (OCR)', 'Abrir Teams Lite',
+                                  'Efectos de sonido', 'Animaciones y movimiento'])
+                self.assertFalse(mascot.capture_action.isEnabled())
+                self.assertFalse(mascot.ocr_action.isEnabled())
 
-                mascot.record_button.click()  # starts at once with the defaults
+                mascot.record_action.trigger()  # starts at once with the defaults
                 self.assertIsNotNone(window.recorder)
                 self.assertEqual(window.store.get_meeting(window.meeting_id)['title'], 'Reunión rápida')
-                self.assertEqual(mascot.record_button.text(), 'Detener')
-                self.assertTrue(mascot.capture_button.isEnabled())
-                self.assertTrue(mascot.ocr_button.isEnabled())
+                self.assertIs(window.astro.state, AstroState.RECORDING)
+                self.assertEqual(mascot.bubble.text(), 'Grabando reunión')
+                self.assertEqual(mascot.record_action.text(), 'Detener grabación')
+                self.assertTrue(mascot.capture_action.isEnabled())
+                self.assertTrue(mascot.ocr_action.isEnabled())
                 self.assertFalse(mascot.timer_label.isHidden())
 
                 with mock.patch.object(window, 'mark_moment') as mark, mock.patch.object(window, 'capture_ocr') as ocr:
-                    mascot.capture_button.click()
-                    mascot.ocr_button.click()
+                    mascot.capture_action.trigger()
+                    mascot.ocr_action.trigger()
                 mark.assert_called_once_with(from_hotkey=True)
                 ocr.assert_called_once_with()
 
-                mascot.record_button.click()  # stops
+                mascot.record_action.trigger()  # stops
                 OcrAttendeeTests._wait_until_stopped(self, window)
                 self.assertIsNone(window.recorder)
-                self.assertEqual(mascot.record_button.text(), 'Grabar')
-                self.assertFalse(mascot.capture_button.isEnabled())
+                self.assertIs(window.astro.state, AstroState.SUCCESS)  # stored, no transcription configured
+                self.assertEqual(mascot.bubble.text(), '¡Reunión guardada!')
+                self.assertEqual(mascot.record_action.text(), 'Grabar reunión')
 
                 window.showMinimized()
-                mascot.open_requested.emit()  # double click on the mascot
+                mascot.open_action.trigger()
                 self.assertFalse(window.isMinimized())
+
+                mascot.mousePressEvent(_mouse(QEvent.Type.MouseButtonPress, mascot, 10, 10))
+                mascot.mouseReleaseEvent(_mouse(QEvent.Type.MouseButtonRelease, mascot, 10, 10))
+                self.assertTrue(mascot.menu.isVisible())  # a click opens the menu
+                mascot.menu.hide()
             finally:
                 self._close(window)
             self.assertTrue(mascot.isHidden())  # closing Teams Lite closes its mascot
+
+    def test_astro_mirrors_real_events(self):
+        from teams_lite.astro import AstroState
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch('teams_lite.app.Recorder', _FakeRecorder), \
+             mock.patch('teams_lite.app.QMessageBox.warning'):
+            window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False, ocr_enabled=False))
+            window.timer.stop()
+            try:
+                window.quick_start_recording()
+                meeting_id = window.meeting_id
+                window.signals.moment_marked.emit({'offset_seconds': 3.0, 'image': 'moments/a.jpg', 'source': 'teams'})
+                self.application.processEvents()
+                self.assertIs(window.astro.state, AstroState.CAPTURING)
+                window.signals.moment_marked.emit({'offset_seconds': 4.0, 'image': None,
+                                                   'problem': 'Teams está minimizado.'})
+                self.application.processEvents()
+                self.assertIs(window.astro.state, AstroState.ERROR)
+                self.assertEqual(window.mascot.bubble.text(), 'Teams está minimizado.')
+                window.signals.ocr_ready.emit('OCR: 3 nombres en pantalla · 3 asistentes en total.')
+                self.application.processEvents()
+                self.assertIs(window.astro.state, AstroState.CAPTURING)
+                window._show_error('No se pudo leer la ventana de Teams.')
+                self.assertEqual(window.astro.message, 'No se pudo leer la ventana de Teams.')
+                window.stop_recording()
+                OcrAttendeeTests._wait_until_stopped(self, window)
+
+                window.astro.recording_started()
+                window.astro.stop_requested()
+                window.astro.recording_stopped(processing=True)
+                window.signals.transcription_progress.emit(meeting_id, 0.5)
+                self.application.processEvents()
+                self.assertEqual(window.astro.message, 'Procesando grabación · 50 %')
+                window.signals.transcript_ready.emit(str(window.store.root / meeting_id / 'transcript.txt'))
+                window.signals.transcription_finished.emit(meeting_id)
+                self.application.processEvents()
+                self.assertIs(window.astro.state, AstroState.SUCCESS)
+
+                window.astro.recording_stopped(processing=True)  # a transcription that fails
+                window.signals.transcription_finished.emit(meeting_id)
+                self.application.processEvents()
+                self.assertIs(window.astro.state, AstroState.ERROR)
+            finally:
+                window.close()
+
+    def test_recording_never_depends_on_astro(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch('teams_lite.app.Recorder', _FakeRecorder):
+            window = self._window(d)
+            try:
+                with mock.patch.object(window.astro, 'recording_started', side_effect=RuntimeError('sprite failure')), \
+                     mock.patch.object(window.mascot, 'set_recording', side_effect=RuntimeError('paint failure')):
+                    window.quick_start_recording()
+                self.assertIsNotNone(window.recorder)
+                self.assertTrue(window.store.get_meeting(window.meeting_id)['status'] == 'recording')
+            finally:
+                self._close(window)
+
+    def test_sound_motion_size_and_character_options_apply_at_once(self):
+        from teams_lite.mascot import load_mascot_settings
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch('teams_lite.app.Recorder', _FakeRecorder), \
+             mock.patch('teams_lite.app._confirmation_beep') as beep, \
+             mock.patch('teams_lite.app.capture_moment', return_value={'offset_seconds': 1.0, 'image': None}):
+            strip = QImage(32, 16, QImage.Format.Format_ARGB32)
+            strip.fill(0)
+            (Path(d) / 'mascots' / 'brasa').mkdir(parents=True)
+            strip.save(str(Path(d) / 'mascots' / 'brasa' / 'idle.png'))
+            window = self._window(d)
+            try:
+                page, mascot = window.mascot_page, window.mascot
+                self.assertTrue(mascot.frame_timer.isActive())
+                page.motion_checkbox.setChecked(False)
+                self.assertFalse(mascot.frame_timer.isActive())  # a still frame: no animation work
+                self.assertFalse(mascot.motion_action.isChecked())
+                mascot.motion_action.trigger()  # the menu toggles it back
+                self.assertTrue(load_mascot_settings(d).motion)
+                self.assertTrue(page.motion_checkbox.isChecked())
+
+                page.size_combo.setCurrentIndex(page.size_combo.findData(4))
+                self.assertEqual(mascot.sprite.pixmap().width(), 32 * 4)
+                self.assertEqual(page.character_combo.currentData(), 'astro')
+                self.assertEqual([page.character_combo.itemData(i) for i in range(page.character_combo.count())],
+                                 ['astro', 'brasa'])
+                page.character_combo.setCurrentIndex(page.character_combo.findData('brasa'))
+                self.assertEqual(mascot.sprite.pixmap().width(), 16 * 4)  # the user's 16 px frames
+                self.assertEqual(load_mascot_settings(d).character, 'brasa')
+
+                page.sound_checkbox.setChecked(False)
+                window.quick_start_recording()
+                mascot.capture_action.trigger()
+                beep.assert_not_called()  # effects muted
+            finally:
+                self._close(window)
+
 
     def test_mascot_section_sets_the_defaults_and_visibility(self):
         from teams_lite.mascot import load_mascot_settings
@@ -450,7 +567,7 @@ class MascotUiTests(unittest.TestCase):
             window = self._window(d)
             try:
                 window.mascot.move(140, 260)
-                window.mascot.moved.emit(140, 260)
+                window.mascot.moved.emit(140, 260)  # end of a drag
                 self.assertEqual(load_mascot_settings(d).position, (140, 260))
             finally:
                 window.close()

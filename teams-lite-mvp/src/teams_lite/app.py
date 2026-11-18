@@ -79,6 +79,8 @@ from .chat_ui import ChatPanel
 from .minutes import CLI_LABELS, MinutesError, generate_minutes, load_minutes
 from .previews import meeting_screenshots
 from .mascot import load_mascot_settings, resolve_placement, save_mascot_settings
+from .astro import AstroMachine
+from .astro_sprites import load_animations
 from .mascot_ui import MascotSettingsPage, MascotWidget
 from .moments import capture_moment, format_offset, load_moments, moments_for_minutes
 from .ocr import load_participants, merge_participants, read_teams_names
@@ -198,35 +200,13 @@ QLabel#adminSummary {
     font-size: 12px;
     font-weight: 600;
 }
-QFrame#mascotBody {
-    background: #13201F;
-    border: 1px solid #2D5A54;
-    border-radius: 24px;
-}
-QPushButton#mascotRecord, QPushButton#mascotAction {
-    min-height: 32px;
-    padding: 0 12px;
-    border-radius: 16px;
-    font-size: 13px;
-    font-weight: 600;
-}
-QPushButton#mascotRecord {
-    background: #46C7B5;
-    border: none;
-    color: #0F1B1C;
-}
-QPushButton#mascotRecord[recording="true"] {
-    background: #F87171;
-    color: #1A0E0E;
-}
-QPushButton#mascotAction {
-    background: #1E2E2D;
-    border: 1px solid #2D5A54;
-    color: #DCEFEC;
-}
-QPushButton#mascotAction:disabled {
-    color: #5E6E6C;
-    border-color: #22302F;
+QLabel#astroBubble {
+    padding: 6px 10px;
+    background: #F4F1FF;
+    border: 2px solid #1B1440;
+    color: #1B1440;
+    font-size: 12px;
+    font-weight: 700;
 }
 QLabel#mascotTimer {
     color: #9EE6DA;
@@ -1172,24 +1152,53 @@ class MainWindow(QMainWindow):
         return page
 
     def _build_mascot(self) -> QWidget:
-        """The floating mascot and its Mascota section, both driven by data/mascot.json."""
+        """Astro (the floating mascot) and its Mascota section, both driven by data/mascot.json."""
         settings = load_mascot_settings(self.store.root)
-        self.mascot = MascotWidget()
+        self.astro = AstroMachine(on_change=lambda: self._astro_safely(self.mascot.refresh))
+        self._transcribed: set[str] = set()
+        self._last_error = ""
+        self.mascot = MascotWidget(self.astro)
         self.mascot.setStyleSheet(self.styleSheet())  # a separate top-level window: it does not inherit it
+        self.mascot.sound_toggled.connect(lambda on: self._mascot_flag("sound", on))
+        self.mascot.motion_toggled.connect(lambda on: self._mascot_flag("motion", on))
         self.mascot.record_requested.connect(self._toggle_recording_from_mascot)
         self.mascot.capture_requested.connect(lambda: self.mark_moment(from_hotkey=True))
         self.mascot.ocr_requested.connect(lambda: self.capture_ocr())
         self.mascot.open_requested.connect(self._open_from_mascot)
         self.mascot.moved.connect(self._mascot_moved)
-        self.mascot.adjustSize()
+        page = MascotSettingsPage(self.store, settings)
+        page.changed.connect(self._mascot_settings_changed)
+        self.mascot_page = page
+        self._apply_mascot_look(settings)
         if settings.position is not None:
             self.mascot.move(*settings.position)
         else:
             self._place_mascot_by_default()
         self.mascot.setVisible(settings.enabled)
-        page = MascotSettingsPage(self.store, settings)
-        page.changed.connect(self._mascot_settings_changed)
         return page
+
+    def _apply_mascot_look(self, settings) -> None:
+        animations, problems = load_animations(self.store.root, settings.character)
+        self.mascot.set_animations(animations)
+        self.mascot.set_scale(settings.scale)
+        self.mascot.set_motion(settings.motion)
+        self.mascot.set_sound(settings.sound)
+        self.mascot_page.set_sprite_problems(problems, any(a.source == "custom" for a in animations.values()))
+        self._mascot_character = settings.character
+
+    def _astro_safely(self, action, *args, **kwargs) -> None:
+        """Astro only mirrors what happened: a failure in it must never affect recording."""
+        try:
+            action(*args, **kwargs)
+        except Exception as exc:  # noqa: BLE001 - the mascot is decoration over real work
+            print(f"Astro: {exc}", file=sys.stderr)
+
+    def _mascot_flag(self, name: str, value: bool) -> None:
+        """Sound or motion switched from Astro's own menu."""
+        self.mascot_page.set_flag(name, value)
+        save_mascot_settings(self.store.root, self.mascot_page.settings())
+        if name == "motion":
+            self.mascot.set_motion(value)
 
     def _place_mascot_by_default(self) -> None:
         screen = QApplication.primaryScreen()
@@ -1216,6 +1225,12 @@ class MainWindow(QMainWindow):
 
     def _mascot_settings_changed(self, settings) -> None:
         save_mascot_settings(self.store.root, settings)
+        if settings.character != self._mascot_character:
+            self._apply_mascot_look(settings)
+        else:
+            self.mascot.set_scale(settings.scale)
+            self.mascot.set_motion(settings.motion)
+            self.mascot.set_sound(settings.sound)
         self.mascot.setVisible(settings.enabled)
         if settings.position is None:
             self._place_mascot_by_default()
@@ -1848,11 +1863,17 @@ class MainWindow(QMainWindow):
 
         threading.Thread(target=work, name="mark-moment", daemon=True).start()
         if from_hotkey:
-            _confirmation_beep()  # the user is looking at Teams, not at this window
+            if self.mascot_page.settings().sound:
+                _confirmation_beep()  # the user is looking at Teams, not at this window
         return True
 
     def _moment_done(self, moment: dict) -> None:
         self._moment_count += 1
+        if moment.get("image"):
+            note = "Captura de tu pantalla" if moment.get("source") == "screen" else None
+            self._astro_safely(self.astro.capture_finished, True, note)
+        else:
+            self._astro_safely(self.astro.capture_finished, False, moment.get("problem") or "La captura no se guardó.")
         when = format_offset(moment["offset_seconds"])
         if moment.get("source") == "screen":
             self._set_status(
@@ -1891,8 +1912,8 @@ class MainWindow(QMainWindow):
         self.stop_button.setEnabled(recording and not finalizing)
         mascot = getattr(self, "mascot", None)
         if mascot is not None:
-            mascot.set_recording(recording, getattr(self, "_recording_origin", None))
-            mascot.record_button.setEnabled(not finalizing)
+            self._astro_safely(mascot.set_recording, recording, getattr(self, "_recording_origin", None))
+            mascot.record_action.setEnabled(not finalizing)
 
     def start_recording(self) -> None:
         """Record with the title, organization and project chosen in the recording card."""
@@ -1955,12 +1976,14 @@ class MainWindow(QMainWindow):
         else:
             self._set_status(f"Grabando solo audio, sin hablante visual. {visual_problem}", tone="warning")
         self._refresh()
+        self._astro_safely(self.astro.recording_started)
         return True
 
     def stop_recording(self) -> None:
         if self.recorder is None or self.meeting_id is None:
             return
         recorder, meeting_id = self.recorder, self.meeting_id
+        self._astro_safely(self.astro.stop_requested)
         visual_sampler, self.visual_sampler = self.visual_sampler, None
         ocr_sampler, self.ocr_sampler = self.ocr_sampler, None
         self._release_moment_hotkey()
@@ -1997,6 +2020,8 @@ class MainWindow(QMainWindow):
         self._set_recording_controls(recording=False)
         self._refresh()
         self.ocr_button.setEnabled(False)
+        # The audio is finalized and stored here; transcription may follow.
+        self._astro_safely(self.astro.recording_stopped, processing=self.config.auto_transcribe)
         if not self.config.auto_transcribe:
             self._busy = False
             self._set_status("Grabación finalizada. La transcripción automática está desactivada.", tone="success")
@@ -2663,13 +2688,22 @@ class MainWindow(QMainWindow):
     def _on_transcription_progress(self, meeting_id: str, fraction: float) -> None:
         self._transcription_progress[meeting_id] = fraction
         self._set_card_progress(meeting_id, fraction)
+        self._astro_safely(self.astro.processing_progress, fraction)
         self._set_status(f"Transcribiendo mediante CPU… {int(fraction * 100)} %")
 
     def _on_transcription_finished(self, meeting_id: str) -> None:
         self._transcription_progress.pop(meeting_id, None)
         self._set_card_progress(meeting_id, None)
+        # transcription_finished also arrives after a failure; only transcript_ready means it was saved.
+        if meeting_id in self._transcribed:
+            self._transcribed.discard(meeting_id)
+            self._astro_safely(self.astro.processing_finished)
+        else:
+            self._astro_safely(self.astro.processing_finished,
+                               error=self._last_error or "No se pudo transcribir la grabación.")
 
     def _transcript_done(self, path: str) -> None:
+        self._transcribed.add(Path(path).parent.name)
         self._busy = False
         self._set_status(f"Transcripción guardada · {path}", tone="success")
         self._refresh()
@@ -2677,8 +2711,11 @@ class MainWindow(QMainWindow):
 
     def _ocr_done(self, message: str) -> None:
         self._set_status(message, tone="success")
+        self._astro_safely(self.astro.capture_finished, True, message)
 
     def _show_error(self, message: str) -> None:
+        self._last_error = message
+        self._astro_safely(self.astro.error, message)  # before the dialog, which blocks until closed
         self._busy = False
         self._set_status(message, tone="error")
         QMessageBox.warning(self, "Teams Lite", message)

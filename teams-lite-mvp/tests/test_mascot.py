@@ -26,7 +26,8 @@ class MascotSettingsTests(unittest.TestCase):
     def test_settings_survive_a_save_and_load(self):
         with tempfile.TemporaryDirectory() as d:
             saved = MascotSettings(enabled=False, title='Daily ventas', organization_id='org',
-                                   project_id='proj', position=(120, 640))
+                                   project_id='proj', position=(120, 640), sound=False, motion=False,
+                                   scale=4, character='brasa')
             save_mascot_settings(d, saved)
 
             self.assertEqual(load_mascot_settings(d), saved)
@@ -47,6 +48,18 @@ class MascotSettingsTests(unittest.TestCase):
             self.assertIsNone(settings.organization_id)
             self.assertIsNone(settings.project_id)  # a project only makes sense inside its organization
             self.assertIsNone(settings.position)
+
+    def test_astro_options_default_to_sound_motion_medium_size_and_astro(self):
+        with tempfile.TemporaryDirectory() as d:
+            settings = load_mascot_settings(d)
+            self.assertEqual((settings.sound, settings.motion, settings.scale, settings.character),
+                             (True, True, 3, 'astro'))
+            (Path(d) / 'mascot.json').write_text(json.dumps({
+                'sound': 0, 'motion': 'no', 'scale': 40, 'character': '../../evil',
+            }), encoding='utf-8')
+            settings = load_mascot_settings(d)
+            self.assertEqual((settings.sound, settings.motion, settings.scale, settings.character),
+                             (True, True, 3, 'astro'))
 
 
 class ResolvePlacementTests(unittest.TestCase):
