@@ -4,7 +4,8 @@ from PyInstaller.utils.hooks import collect_all
 
 
 root = Path(SPECPATH)
-datas = []
+# Built-in mascots (Astro, Brasa): astro_sprites.py looks for them next to the package.
+datas = [(str(root / "src" / "teams_lite" / "assets"), "teams_lite/assets")]
 binaries = []
 hiddenimports = []
 # Only what the app runs: Parakeet (onnx_asr + onnxruntime) and audio capture (soundcard).

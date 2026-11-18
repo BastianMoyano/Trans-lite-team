@@ -9,6 +9,14 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class PackagingTests(unittest.TestCase):
+    def test_bundle_ships_the_built_in_mascots(self):
+        spec = (ROOT / "TeamsLite.spec").read_text(encoding="utf-8")
+        self.assertIn('(str(root / "src" / "teams_lite" / "assets"), "teams_lite/assets")', spec)
+        for character in ("astro", "brasa"):
+            for state in ("idle", "moving", "recording", "stopping", "capturing", "processing", "success", "error"):
+                self.assertTrue((ROOT / "src" / "teams_lite" / "assets" / "mascots" / character
+                                 / f"{character}_{state}.png").is_file(), (character, state))
+
     def _spec_entry_script(self) -> Path:
         spec = (ROOT / "TeamsLite.spec").read_text(encoding="utf-8")
         match = re.search(r"Analysis\(\s*\[str\(root(?P<parts>(?:\s*/\s*\"[^\"]+\")+)\)\]", spec)

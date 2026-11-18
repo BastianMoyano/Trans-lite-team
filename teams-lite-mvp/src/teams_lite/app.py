@@ -1183,7 +1183,7 @@ class MainWindow(QMainWindow):
         self.mascot.set_scale(settings.scale)
         self.mascot.set_motion(settings.motion)
         self.mascot.set_sound(settings.sound)
-        self.mascot_page.set_sprite_problems(problems, any(a.source == "custom" for a in animations.values()))
+        self.mascot_page.set_sprite_problems(problems, any(a.source != "placeholder" for a in animations.values()))
         self._mascot_character = settings.character
 
     def _astro_safely(self, action, *args, **kwargs) -> None:

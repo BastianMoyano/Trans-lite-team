@@ -370,7 +370,7 @@ class MascotUiTests(unittest.TestCase):
                 self.assertTrue(mascot.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)
                 self.assertTrue(mascot.windowFlags() & Qt.WindowType.FramelessWindowHint)
                 self.assertTrue(mascot.windowFlags() & Qt.WindowType.WindowDoesNotAcceptFocus)
-                self.assertEqual(mascot.sprite.pixmap().width(), 32 * 3)  # placeholder at the default size
+                self.assertEqual(mascot.sprite.pixmap().width(), 64 * 3)  # the shipped 64 px Astro at the default size
                 self.assertEqual([a.text() for a in mascot.menu.actions() if a.text()],
                                  ['Grabar reunión', 'Capturar reunión', 'Leer asistentes (OCR)', 'Abrir Teams Lite',
                                   'Efectos de sonido', 'Animaciones y movimiento'])
@@ -490,7 +490,7 @@ class MascotUiTests(unittest.TestCase):
                 self.assertTrue(page.motion_checkbox.isChecked())
 
                 page.size_combo.setCurrentIndex(page.size_combo.findData(4))
-                self.assertEqual(mascot.sprite.pixmap().width(), 32 * 4)
+                self.assertEqual(mascot.sprite.pixmap().width(), 64 * 4)
                 self.assertEqual(page.character_combo.currentData(), 'astro')
                 self.assertEqual([page.character_combo.itemData(i) for i in range(page.character_combo.count())],
                                  ['astro', 'brasa'])

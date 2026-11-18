@@ -1,4 +1,4 @@
-"""Mascot spritesheets: the user's PNGs when present, a code-drawn pixel-art Astro otherwise.
+"""Mascot spritesheets: the user's PNGs, then the characters shipped with the app, then a code-drawn Astro.
 
 Contract for a character (see docs/astro-sprites.md): a folder `data/mascots/<name>/` with one PNG
 per state, named `<name>_<state>.png`, `astro_<state>.png` or `<state>.png`. Each PNG is one
@@ -18,6 +18,7 @@ from .astro import AstroState
 
 MASCOTS_DIR = "mascots"
 DEFAULT_CHARACTER = "astro"
+BUILTIN_DIR = Path(__file__).resolve().parent / "assets" / MASCOTS_DIR  # Astro and Brasa ship with the app
 FPS = {
     AstroState.IDLE: 4, AstroState.MOVING: 8, AstroState.RECORDING: 5, AstroState.STOPPING: 6,
     AstroState.CAPTURING: 8, AstroState.PROCESSING: 6, AstroState.SUCCESS: 6, AstroState.ERROR: 4,
@@ -29,17 +30,20 @@ _NAME = re.compile(r"[\w-]{1,40}")
 class Animation:
     frames: list[QImage]
     fps: int
-    source: str  # "custom" or "placeholder"
+    source: str  # "custom" (data/mascots), "builtin" (shipped with the app) or "placeholder"
 
 
-def list_characters(data_root: str | Path) -> list[str]:
-    """Astro first (always available), then every character folder holding at least one PNG."""
-    folder = Path(data_root) / MASCOTS_DIR
-    found = sorted(
-        entry.name for entry in folder.iterdir()
-        if entry.is_dir() and _NAME.fullmatch(entry.name) and any(entry.glob("*.png"))
-    ) if folder.is_dir() else []
-    return [DEFAULT_CHARACTER] + [name for name in found if name != DEFAULT_CHARACTER]
+def _character_folders(root: Path) -> set[str]:
+    if not root.is_dir():
+        return set()
+    return {entry.name for entry in root.iterdir()
+            if entry.is_dir() and _NAME.fullmatch(entry.name) and any(entry.glob("*.png"))}
+
+
+def list_characters(data_root: str | Path, *, builtin_root: str | Path = BUILTIN_DIR) -> list[str]:
+    """Astro first (always available), then the shipped and the user's characters by name."""
+    found = _character_folders(Path(data_root) / MASCOTS_DIR) | _character_folders(Path(builtin_root))
+    return [DEFAULT_CHARACTER] + sorted(found - {DEFAULT_CHARACTER})
 
 
 def _strip_frames(image: QImage) -> list[QImage] | None:
@@ -50,27 +54,42 @@ def _strip_frames(image: QImage) -> list[QImage] | None:
     return [image.copy(index * size, 0, size, size) for index in range(image.width() // size)]
 
 
-def load_animations(data_root: str | Path, character: str) -> tuple[dict[AstroState, Animation], list[str]]:
-    """One animation per state, plus readable problems for the files that could not be used."""
-    folder = Path(data_root) / MASCOTS_DIR / character if _NAME.fullmatch(character or "") else None
+def _from_folder(folder: Path, character: str, state: AstroState, source: str,
+                 problems: list[str]) -> Animation | None:
+    if not folder.is_dir():
+        return None
+    for name in (f"{character}_{state.value}.png", f"astro_{state.value}.png", f"{state.value}.png"):
+        path = folder / name
+        if not path.is_file():
+            continue
+        image = QImage(str(path))
+        frames = None if image.isNull() else _strip_frames(image)
+        if frames is None:
+            problems.append(
+                f"{name}: no es una tira de fotogramas cuadrados (el ancho debe ser múltiplo del alto); "
+                "se usa el dibujo incluido."
+            )
+            return None
+        return Animation(frames, FPS[state], source)
+    return None
+
+
+def load_animations(data_root: str | Path, character: str, *,
+                    builtin_root: str | Path = BUILTIN_DIR) -> tuple[dict[AstroState, Animation], list[str]]:
+    """One animation per state, plus readable problems for the files that could not be used.
+
+    Per state: the user's folder wins, then the character shipped with the app, then the placeholder.
+    """
+    valid = bool(_NAME.fullmatch(character or ""))
+    user = Path(data_root) / MASCOTS_DIR / character if valid else None
+    shipped = Path(builtin_root) / character if valid else None
     animations, problems = {}, []
     for state in AstroState:
         animation = None
-        if folder is not None and folder.is_dir():
-            for name in (f"{character}_{state.value}.png", f"astro_{state.value}.png", f"{state.value}.png"):
-                path = folder / name
-                if not path.is_file():
-                    continue
-                image = QImage(str(path))
-                frames = None if image.isNull() else _strip_frames(image)
-                if frames is None:
-                    problems.append(
-                        f"{name}: no es una tira de fotogramas cuadrados (el ancho debe ser múltiplo del alto); "
-                        "se usa el dibujo provisional."
-                    )
-                else:
-                    animation = Animation(frames, FPS[state], "custom")
-                break
+        if user is not None:
+            animation = _from_folder(user, character, state, "custom", problems)
+        if animation is None and shipped is not None:
+            animation = _from_folder(shipped, character, state, "builtin", problems)
         animations[state] = animation or placeholder_animation(state)
     return animations, problems
 

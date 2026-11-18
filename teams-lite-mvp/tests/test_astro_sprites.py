@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QApplication
 
 from teams_lite.astro import AstroState
 from teams_lite.astro_sprites import (
+    BUILTIN_DIR,
     DEFAULT_CHARACTER,
     list_characters,
     load_animations,
@@ -31,9 +32,22 @@ class AstroSpritesTests(unittest.TestCase):
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
 
-    def test_placeholder_animates_every_state_with_square_frames(self):
+    def test_built_in_astro_and_brasa_ship_with_the_app(self):
         with tempfile.TemporaryDirectory() as d:
-            animations, problems = load_animations(d, DEFAULT_CHARACTER)
+            self.assertEqual(list_characters(d), ['astro', 'brasa'])
+            for character in ('astro', 'brasa'):
+                animations, problems = load_animations(d, character)
+                self.assertEqual(problems, [])
+                for state, animation in animations.items():
+                    with self.subTest(character=character, state=state):
+                        self.assertEqual(animation.source, 'builtin')
+                        self.assertEqual(len(animation.frames), 8)
+                        self.assertEqual({(f.width(), f.height()) for f in animation.frames}, {(64, 64)})
+            self.assertTrue((BUILTIN_DIR / 'astro' / 'astro_idle.png').is_file())
+
+    def test_placeholder_animates_every_state_with_square_frames(self):
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as no_builtins:
+            animations, problems = load_animations(d, DEFAULT_CHARACTER, builtin_root=no_builtins)
             self.assertEqual(problems, [])
             self.assertEqual(set(animations), set(AstroState))
             for state, animation in animations.items():
@@ -63,7 +77,7 @@ class AstroSpritesTests(unittest.TestCase):
             self.assertEqual(len(recording.frames), 3)
             self.assertEqual({(f.width(), f.height()) for f in recording.frames}, {(16, 16)})
             self.assertEqual(recording.frames[1].pixelColor(1, 1).red(), 200)
-            self.assertEqual(animations[AstroState.IDLE].source, 'placeholder')
+            self.assertEqual(animations[AstroState.IDLE].source, 'builtin')  # the rest stays the shipped Astro
 
     def test_a_strip_that_breaks_the_contract_falls_back_and_is_reported(self):
         with tempfile.TemporaryDirectory() as d:
@@ -74,21 +88,22 @@ class AstroSpritesTests(unittest.TestCase):
 
             animations, problems = load_animations(d, 'astro')
 
-            self.assertEqual(animations[AstroState.IDLE].source, 'placeholder')
-            self.assertEqual(animations[AstroState.ERROR].source, 'placeholder')
+            self.assertEqual(animations[AstroState.IDLE].source, 'builtin')  # falls back to the shipped frames
+            self.assertEqual(animations[AstroState.ERROR].source, 'builtin')
             self.assertEqual(len(problems), 2)
             self.assertTrue(any('astro_idle.png' in problem and 'cuadrados' in problem for problem in problems))
             self.assertTrue(any('astro_error.png' in problem for problem in problems))
 
     def test_characters_are_folders_and_their_files_may_use_the_character_name(self):
-        with tempfile.TemporaryDirectory() as d:
-            self.assertEqual(list_characters(d), ['astro'])
-            _strip(Path(d) / 'mascots' / 'brasa' / 'brasa_idle.png', frames=2, size=8)
-            _strip(Path(d) / 'mascots' / 'brasa' / 'success.png', frames=4, size=8)
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as no_builtins:
+            self.assertEqual(list_characters(d, builtin_root=no_builtins), ['astro'])
+            _strip(Path(d) / 'mascots' / 'nube' / 'nube_idle.png', frames=2, size=8)
+            _strip(Path(d) / 'mascots' / 'nube' / 'success.png', frames=4, size=8)
             (Path(d) / 'mascots' / 'vacia').mkdir()
 
-            self.assertEqual(list_characters(d), ['astro', 'brasa'])
-            animations, _ = load_animations(d, 'brasa')
+            self.assertEqual(list_characters(d, builtin_root=no_builtins), ['astro', 'nube'])
+            self.assertEqual(list_characters(d), ['astro', 'brasa', 'nube'])
+            animations, _ = load_animations(d, 'nube', builtin_root=no_builtins)
             self.assertEqual(len(animations[AstroState.IDLE].frames), 2)
             self.assertEqual(len(animations[AstroState.SUCCESS].frames), 4)
             self.assertEqual(animations[AstroState.ERROR].source, 'placeholder')
