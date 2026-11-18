@@ -12,7 +12,7 @@ Branch: feat/mascot-quick-actions (not delivered yet) · Delivery: ask-on-risk �
 
 ## Tasks
 - T1 [S1,S2] inline — astro.AstroMachine: event-driven states, transient states with durations, messages, progress — done, RED (no module) → GREEN 8 with a fake clock
-- T2 [S4,S5,S6] inline — sprite loading per character (user PNGs or placeholder), frame contract validation, nearest-neighbour scaling — pending
+- T2 [S4,S5,S6] inline — sprite loading per character (user PNGs or placeholder), frame contract validation, nearest-neighbour scaling — done, RED (no module) → GREEN 5; placeholder contact sheet inspected (8 states, 4-6 frames each)
 - T3 [S1-S3,S5] inline — Astro widget (sprite, bubble, click menu, drag = MOVING, sound/motion settings, size) wired to real app events — pending
 - T4 [S4,S6] inline — docs/astro-sprites.md (contract + prompts for Astro and an original fire dragon), README — pending
 
