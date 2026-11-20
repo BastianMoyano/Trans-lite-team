@@ -119,14 +119,21 @@ def forget_meeting(data_root: str | Path, meeting_id: str) -> None:
     """
     if not meeting_id or Path(meeting_id).name != meeting_id or meeting_id in (".", ".."):
         return
-    chat_root = Path(data_root).resolve() / CHAT_DIR
+    chat_root = (Path(data_root).resolve() / CHAT_DIR).resolve()
     if not chat_root.is_dir():
         return
+
+    def inside_chat(workspace: Path) -> bool:
+        # A junction or link planted in .chat must never lead the cleanup outside it.
+        return workspace.resolve().parent == chat_root
+
     own = chat_root / _safe_name(meeting_scope(meeting_id))
     # Two ids can share a safe name; the workspace is this meeting's only if it holds its copy.
-    if (own / MEETINGS_DIR / meeting_id).is_dir():
+    if (own / MEETINGS_DIR / meeting_id).is_dir() and inside_chat(own):
         shutil.rmtree(own, ignore_errors=True)
     for workspace in chat_root.iterdir():
+        if not inside_chat(workspace):
+            continue
         copy = workspace / MEETINGS_DIR / meeting_id
         if copy.is_dir() and copy.resolve().parent == (workspace / MEETINGS_DIR).resolve():
             shutil.rmtree(copy, ignore_errors=True)

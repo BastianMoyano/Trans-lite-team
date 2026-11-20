@@ -123,6 +123,23 @@ class ForgetMeetingTests(unittest.TestCase):
             self.assertTrue((other / "meetings" / "Kickoff").is_dir())
             self.assertTrue((Path(root) / "Kickoff" / "minutes.md").is_file())  # originals untouched
 
+    def test_a_link_planted_in_the_chat_folder_is_never_followed(self):
+        with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as outside:
+            victim = Path(outside) / "meetings" / "Kickoff"
+            victim.mkdir(parents=True)
+            (victim / "keep.txt").write_text("keep", encoding="utf-8")
+            chat = Path(root) / CHAT_DIR
+            chat.mkdir()
+            try:
+                (chat / "evil").symlink_to(outside, target_is_directory=True)
+                (chat / "meeting-Kickoff").symlink_to(outside, target_is_directory=True)
+            except OSError:
+                self.skipTest("this account cannot create symbolic links")
+
+            forget_meeting(root, "Kickoff")
+
+            self.assertTrue((victim / "keep.txt").is_file())
+
     def test_unsafe_or_unknown_ids_touch_nothing(self):
         with tempfile.TemporaryDirectory() as root:
             kept = _meeting(root, "Kickoff", minutes="# Minuta")
