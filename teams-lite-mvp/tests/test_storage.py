@@ -45,6 +45,123 @@ class StorageTests(unittest.TestCase):
             self.assertFalse((Path(d) / target).exists())
             self.assertTrue(other_file.is_file())
 
+    def _meeting_with_audio(self, storage, title='target'):
+        meeting = storage.create_meeting(title)
+        stream = storage.create_stream(meeting, 'microphone', 8000, 1)
+        for sequence in range(2):
+            segment = storage.begin_segment(stream, sequence, 1.0 + sequence, '2026-01-01T00:00:00+00:00')
+            Path(segment['temp_path']).write_bytes(b'\x01\x00' * 80)
+            storage.finalize_segment(segment['id'])
+        folder = storage.root / meeting
+        (folder / 'transcript.txt').write_text('[00:00:01.000] Local: Hola\n', encoding='utf-8')
+        (folder / 'minutes.md').write_text('# Minuta', encoding='utf-8')
+        (folder / 'moments').mkdir()
+        (folder / 'moments' / 'moment.jpg').write_bytes(b'jpeg')
+        (folder / 'visual-frames').mkdir()
+        (folder / 'visual-frames' / 'teams-20261117T100500000000Z.png').write_bytes(b'png')
+        storage.finish_meeting(meeting)
+        return meeting
+
+    def test_release_audio_removes_only_the_audio_and_keeps_everything_else(self):
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            target = self._meeting_with_audio(storage)
+            other = self._meeting_with_audio(storage, 'other')
+            audio = [Path(row['path']) for row in storage.list_segments(target)]
+            expected = sum(path.stat().st_size for path in audio)
+
+            self.assertEqual(storage.audio_bytes(target), expected)
+            self.assertEqual(storage.release_audio(target), (expected, 0))
+
+            self.assertFalse(any(path.exists() for path in audio))
+            self.assertEqual({row['status'] for row in storage.list_segments(target)}, {'released'})
+            self.assertEqual(storage.audio_bytes(target), 0)
+            folder = Path(d) / target
+            for kept in ('transcript.txt', 'minutes.md', 'moments/moment.jpg',
+                         'visual-frames/teams-20261117T100500000000Z.png'):
+                self.assertTrue((folder / kept).is_file(), kept)
+            self.assertEqual(storage.get_meeting(target)['status'], 'completed')
+            self.assertIn('audio_released', {event['kind'] for event in storage.list_events(target)})
+            self.assertTrue(all(Path(row['path']).is_file() for row in storage.list_segments(other)))
+            self.assertEqual(storage.release_audio(target), (0, 0))  # nothing left to free
+
+    def test_release_audio_keeps_a_file_windows_has_locked(self):
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            meeting = self._meeting_with_audio(storage)
+            rows = storage.list_segments(meeting)
+            locked = Path(rows[0]['path'])
+            freeable = Path(rows[1]['path']).stat().st_size
+            real_unlink = Path.unlink
+
+            def unlink(path, *args, **kwargs):
+                if path == locked:
+                    raise PermissionError('in use')
+                return real_unlink(path, *args, **kwargs)
+
+            with mock.patch.object(Path, 'unlink', unlink):
+                self.assertEqual(storage.release_audio(meeting), (freeable, 1))
+
+            self.assertTrue(locked.is_file())
+            statuses = {row['path']: row['status'] for row in storage.list_segments(meeting)}
+            self.assertEqual(statuses[str(locked)], 'finalized')
+            self.assertEqual(statuses[rows[1]['path']], 'released')
+            self.assertEqual(storage.audio_bytes(meeting), locked.stat().st_size)
+
+    def test_release_audio_refuses_a_meeting_without_transcript(self):
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            meeting = self._meeting_with_audio(storage)
+            (storage.root / meeting / 'transcript.txt').unlink()
+
+            with self.assertRaises(RuntimeError):
+                storage.release_audio(meeting)
+
+            self.assertTrue(all(Path(row['path']).is_file() for row in storage.list_segments(meeting)))
+            self.assertEqual({row['status'] for row in storage.list_segments(meeting)}, {'finalized'})
+
+    def test_interrupted_release_never_claims_deleted_audio_and_finishes_on_retry(self):
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            meeting = self._meeting_with_audio(storage)
+            rows = storage.list_segments(meeting)
+            second = Path(rows[1]['path'])
+            second_size = second.stat().st_size
+            real_unlink = Path.unlink
+
+            def unlink(path, *args, **kwargs):
+                if path == second:
+                    raise RuntimeError('process killed')  # not a locked file: the release stops here
+                return real_unlink(path, *args, **kwargs)
+
+            with mock.patch.object(Path, 'unlink', unlink), self.assertRaises(RuntimeError):
+                storage.release_audio(meeting)
+
+            self.assertFalse(Path(rows[0]['path']).exists())
+            statuses = {row['status'] for row in storage.list_segments(meeting)}
+            self.assertNotIn('finalized', statuses)  # nothing says it can still be transcribed
+            self.assertEqual(storage.audio_bytes(meeting), second_size)
+
+            self.assertEqual(storage.release_audio(meeting), (second_size, 0))
+            self.assertFalse(second.exists())
+            self.assertEqual({row['status'] for row in storage.list_segments(meeting)}, {'released'})
+
+    def test_release_audio_is_rejected_while_recording_or_for_unknown_meetings(self):
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            meeting = storage.create_meeting('live')
+            stream = storage.create_stream(meeting, 'microphone', 8000, 1)
+            segment = storage.begin_segment(stream, 0, 1.0, '2026-01-01T00:00:00+00:00')
+            Path(segment['temp_path']).write_bytes(b'\x01\x00' * 80)
+            storage.finalize_segment(segment['id'])
+
+            with self.assertRaises(RuntimeError):
+                storage.release_audio(meeting)
+            with self.assertRaises(ValueError):
+                storage.release_audio('missing')
+            self.assertTrue(Path(segment['path']).is_file())
+            self.assertEqual(storage.list_segments(meeting)[0]['status'], 'finalized')
+
     def test_meeting_folder_is_named_with_local_date_time_and_title(self):
         with tempfile.TemporaryDirectory() as d:
             storage = Storage(d)

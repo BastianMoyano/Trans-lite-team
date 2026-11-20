@@ -1,8 +1,10 @@
-"""Finds the screenshots taken in a meeting: for its preview thumbnail and its gallery."""
+"""Finds the screenshots taken in a meeting: for its preview thumbnail, its gallery and its export."""
 from __future__ import annotations
 
 from datetime import datetime
+import os
 from pathlib import Path
+import zipfile
 
 from .moments import format_offset, load_moments
 
@@ -46,6 +48,29 @@ def meeting_screenshots(meeting_dir: str | Path) -> list[dict]:
         for path in sorted(p for p in frames.glob("*.png") if not p.name.startswith(".")):
             shots.append({"path": path, "kind": "frame", "label": _frame_label(path)})
     return shots
+
+
+def export_screenshots(meeting_dir: str | Path, destination: str | Path) -> Path:
+    """Writes every screenshot of a meeting into a .zip, numbered in gallery order.
+
+    The archive is written next to `destination` and moved into place only when complete,
+    so a failure never leaves a half-written file behind.
+    """
+    shots = meeting_screenshots(meeting_dir)
+    if not shots:
+        raise ValueError("Esta reunión no tiene capturas")
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    partial = destination.with_name(f".{destination.name}.part")
+    try:
+        # Images are already compressed: storing them is as small and much faster.
+        with zipfile.ZipFile(partial, "w", compression=zipfile.ZIP_STORED) as archive:
+            for index, shot in enumerate(shots, start=1):
+                archive.write(shot["path"], f"{index:03d}-{shot['path'].name}")
+        os.replace(partial, destination)
+    finally:
+        partial.unlink(missing_ok=True)
+    return destination
 
 
 def meeting_thumbnail(meeting_dir: str | Path) -> Path | None:

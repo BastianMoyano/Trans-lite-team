@@ -11,7 +11,7 @@ import tempfile
 import threading
 import time
 
-from PySide6.QtCore import QByteArray, QEvent, QObject, QRect, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QByteArray, QEvent, QMimeData, QObject, QRect, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (
     QColor,
     QDesktopServices,
@@ -77,7 +77,7 @@ from .library_ui import (
 )
 from .chat_ui import ChatPanel
 from .minutes import CLI_LABELS, MinutesError, generate_minutes, load_minutes
-from .previews import meeting_screenshots
+from .previews import export_screenshots, meeting_screenshots
 from .mascot import load_mascot_settings, resolve_placement, save_mascot_settings
 from .astro import AstroMachine, AstroState
 from .astro_sprites import load_animations
@@ -865,6 +865,16 @@ def _dark_palette() -> QPalette:
     return palette
 
 
+def _format_size(size: int) -> str:
+    """Bytes as a short Spanish-style size: '850 KB', '1,4 GB'."""
+    value = float(size)
+    for unit in ("B", "KB", "MB"):
+        if value < 1024:
+            return f"{value:.0f} {unit}" if unit != "MB" else f"{value:.1f} {unit}".replace(".", ",")
+        value /= 1024
+    return f"{value:.1f} GB".replace(".", ",")
+
+
 def _divider() -> QFrame:
     line = QFrame()
     line.setObjectName("divider")
@@ -1233,6 +1243,9 @@ class MainWindow(QMainWindow):
         self.ocr_checkbox.toggled.connect(self._sync_ocr_button)
         self.table.itemSelectionChanged.connect(self.show_selected_transcript)
         self.delete_button.clicked.connect(self.delete_selected_meeting)
+        self.release_audio_button.clicked.connect(self.release_selected_audio)
+        self.gallery_copy_button.clicked.connect(self.copy_gallery_screenshots)
+        self.gallery_export_button.clicked.connect(self.export_gallery_screenshots)
         self.rename_button.clicked.connect(lambda: self.rename_meeting())
         self.placement_picker.organization_combo.currentIndexChanged.connect(lambda _index: self._refresh())
         self.placement_picker.project_combo.currentIndexChanged.connect(lambda _index: self._refresh())
@@ -1776,6 +1789,13 @@ class MainWindow(QMainWindow):
             set_button_icon(button, icon, COLORS["text_soft"], gap=6)
             button.setAccessibleName(label)
             button.setToolTip(tip)
+        self.release_audio_button = QPushButton("Liberar espacio")
+        self.release_audio_button.setObjectName("ghostButton")
+        set_button_icon(self.release_audio_button, "sparkle", COLORS["text_soft"], gap=6)
+        self.release_audio_button.setAccessibleName("Liberar espacio")
+        self.release_audio_button.setToolTip(
+            "Eliminar solo el audio de la reunión; se conservan la transcripción, la minuta y las capturas"
+        )
         self.delete_button = QPushButton("Eliminar reunión")
         self.delete_button.setObjectName("deleteButton")
         set_button_icon(self.delete_button, "trash", COLORS["danger"], gap=6)
@@ -1788,7 +1808,10 @@ class MainWindow(QMainWindow):
             button.setEnabled(False)
             first.addWidget(button)
         first.addStretch(1)
+        self.release_audio_button.setEnabled(False)
         self.delete_button.setEnabled(False)
+        second.setSpacing(6)
+        second.addWidget(self.release_audio_button)
         second.addStretch(1)
         second.addWidget(self.delete_button)
         actions.addLayout(first)
@@ -2371,6 +2394,7 @@ class MainWindow(QMainWindow):
     def show_selected_transcript(self) -> None:
         meeting_id = self._selected_meeting_id()
         self.delete_button.setEnabled(meeting_id is not None)
+        self.release_audio_button.setEnabled(meeting_id is not None)
         self.rename_button.setEnabled(meeting_id is not None)
         self.move_button.setEnabled(meeting_id is not None)
         self.export_button.setEnabled(meeting_id is not None)
@@ -2428,6 +2452,23 @@ class MainWindow(QMainWindow):
         self.gallery_summary.setObjectName("fieldHint")
         self.gallery_summary.setWordWrap(True)
         layout.addWidget(self.gallery_summary)
+        share = QHBoxLayout()
+        share.setSpacing(6)
+        self.gallery_copy_button = QPushButton("Copiar todas")
+        self.gallery_export_button = QPushButton("Exportar todas…")
+        for button, icon, tip in (
+            (self.gallery_copy_button, "copy",
+             "Copiar todas las capturas al portapapeles para pegarlas en Teams, Outlook o una carpeta"),
+            (self.gallery_export_button, "download", "Guardar todas las capturas en un archivo .zip"),
+        ):
+            button.setObjectName("ghostButton")
+            set_button_icon(button, icon, COLORS["text_soft"], gap=6)
+            button.setAccessibleName(button.text())
+            button.setToolTip(tip)
+            button.setEnabled(False)
+            share.addWidget(button)
+        share.addStretch(1)
+        layout.addLayout(share)
         self.gallery = QListWidget()
         self.gallery.setObjectName("previewGrid")
         self.gallery.setViewMode(QListView.ViewMode.IconMode)
@@ -2460,6 +2501,8 @@ class MainWindow(QMainWindow):
             item.setTextAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
             self.gallery.addItem(item)
         self._gallery_pending = [self.gallery.item(row) for row in range(self.gallery.count())]
+        self.gallery_copy_button.setEnabled(bool(shots))
+        self.gallery_export_button.setEnabled(bool(shots))
         if meeting_id is None:
             self.gallery_summary.setText("Selecciona una reunión para ver sus capturas.")
         elif not shots:
@@ -2483,6 +2526,45 @@ class MainWindow(QMainWindow):
                 return
             item = self._gallery_pending.pop(0)
             item.setIcon(QIcon(cache.pixmap(Path(item.data(Qt.ItemDataRole.UserRole)))))
+
+    def copy_gallery_screenshots(self) -> None:
+        """Puts every capture of the selected meeting on the clipboard as files, ready to paste."""
+        meeting_id = self._selected_meeting_id()
+        shots = meeting_screenshots(self.store.root / meeting_id) if meeting_id else []
+        if not shots:
+            return
+        mime = QMimeData()
+        mime.setUrls([QUrl.fromLocalFile(str(shot["path"])) for shot in shots])
+        QApplication.clipboard().setMimeData(mime)
+        noun = "captura copiada" if len(shots) == 1 else "capturas copiadas"
+        self._set_status(f"{len(shots)} {noun} · pégalas en Teams, Outlook o una carpeta", tone="success")
+
+    def _choose_screenshots_export(self, meeting_id: str) -> Path | None:
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Exportar capturas", str(Path.home() / f"{meeting_id} - capturas.zip"), "Archivo .zip (*.zip)"
+        )
+        return Path(path) if path else None
+
+    def export_gallery_screenshots(self) -> None:
+        """Writes every capture of the selected meeting into a .zip in the background."""
+        meeting_id = self._selected_meeting_id()
+        if meeting_id is None:
+            return
+        path = self._choose_screenshots_export(meeting_id)
+        if path is None:
+            return
+        meeting_dir = self.store.root / meeting_id
+        self._set_status("Exportando las capturas…")
+
+        def work() -> None:
+            try:
+                written = export_screenshots(meeting_dir, path)
+            except Exception as exc:
+                self.signals.failure.emit(f"No se pudieron exportar las capturas: {exc}")
+                return
+            self.signals.status.emit(f"Capturas exportadas · {written}")
+
+        threading.Thread(target=work, name="screenshots-export", daemon=True).start()
 
     def _open_gallery_image(self, item: QListWidgetItem) -> None:
         path = Path(str(item.data(Qt.ItemDataRole.UserRole)))
@@ -2772,6 +2854,7 @@ class MainWindow(QMainWindow):
             return
         self.table.clearSelection()
         self.delete_button.setEnabled(False)
+        self.release_audio_button.setEnabled(False)
         self.rename_button.setEnabled(False)
         self.move_button.setEnabled(False)
         self.export_button.setEnabled(False)
@@ -2779,6 +2862,57 @@ class MainWindow(QMainWindow):
         self._show_transcript_placeholder("Selecciona una reunión para ver su transcripción.")
         self._set_status("Reunión eliminada.", tone="success")
         self._refresh()
+
+    def _confirm_release_audio(self, title: str, size: int) -> bool:
+        dialog = QMessageBox(self)
+        dialog.setIcon(QMessageBox.Icon.Warning)
+        dialog.setWindowTitle("Liberar espacio")
+        dialog.setText(f'¿Quieres eliminar el audio de "{title}" ({_format_size(size)})?')
+        dialog.setInformativeText(
+            "Se conservan la transcripción, la minuta, los momentos y las capturas. "
+            "Sin el audio ya no podrás volver a transcribir esta reunión ni exportarla con audio."
+        )
+        release_action = dialog.addButton("Eliminar audio", QMessageBox.ButtonRole.DestructiveRole)
+        dialog.addButton("Cancelar", QMessageBox.ButtonRole.RejectRole)
+        dialog.exec()
+        return dialog.clickedButton() is release_action
+
+    def release_selected_audio(self) -> None:
+        """Deletes only the audio of the selected meeting to free disk space."""
+        meeting = self.store.get_meeting(self._selected_meeting_id() or "")
+        if meeting is None:
+            return
+        meeting_id = meeting["id"]
+        if meeting_id == self.meeting_id or meeting["status"] == "recording":
+            self._show_error("Detén la grabación antes de liberar el audio de esta reunión.")
+            return
+        if meeting_id in self._transcription_progress:
+            self._show_error("Espera a que termine la transcripción antes de liberar el audio.")
+            return
+        if not (self.store.root / meeting_id / "transcript.txt").is_file():
+            self._show_error(
+                "Esta reunión todavía no tiene transcripción: sin el audio no se podría transcribir nunca."
+            )
+            return
+        size = self.store.audio_bytes(meeting_id)
+        if size == 0:
+            self._set_status("Esta reunión no tiene audio guardado; no hay espacio que liberar.")
+            return
+        if not self._confirm_release_audio(meeting["title"], size):
+            return
+        try:
+            freed, failed = self.store.release_audio(meeting_id)
+        except Exception as exc:
+            self._show_error(f"No se pudo liberar el audio: {exc}")
+            return
+        if failed:
+            self._set_status(
+                f"Espacio liberado · {_format_size(freed)}. {failed} archivo(s) en uso no se pudieron "
+                "eliminar; ciérralos e inténtalo de nuevo.",
+                tone="warning",
+            )
+        else:
+            self._set_status(f"Espacio liberado · {_format_size(freed)}", tone="success")
 
     def _set_status(self, message: str, tone: str = "info") -> None:
         icon, color = {

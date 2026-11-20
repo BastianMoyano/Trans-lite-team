@@ -3,6 +3,7 @@ import sys
 import tempfile
 import time
 import unittest
+import zipfile
 from pathlib import Path
 from unittest import mock
 
@@ -2302,7 +2303,9 @@ class RenameMeetingUiTests(unittest.TestCase):
                 window.close()
 
 
-class SharingUiTests(unittest.TestCase):
+class _DataDirUiCase(unittest.TestCase):
+    """A window over a throwaway data folder, plus two spare folders (other PC, output)."""
+
     @classmethod
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
@@ -2328,6 +2331,8 @@ class SharingUiTests(unittest.TestCase):
         window._show_error = mock.Mock()
         return window
 
+
+class SharingUiTests(_DataDirUiCase):
     def _package_from_other_pc(self, organization=None, project=None):
         source = Storage(self.other)
         placement = {}
@@ -2376,6 +2381,7 @@ class SharingUiTests(unittest.TestCase):
             window._show_error.assert_not_called()
         finally:
             window.close()
+
 
     def test_import_lands_in_the_project_being_browsed(self):
         package = self._package_from_other_pc('Otra empresa', 'Otro proyecto')
@@ -2433,6 +2439,120 @@ class SharingUiTests(unittest.TestCase):
             self.assertIn('paquete', window._show_error.call_args[0][0])
             window._choose_import_placement.assert_not_called()
             self.assertEqual(storage.list_meetings(), [])
+        finally:
+            window.close()
+
+
+class FreeSpaceUiTests(_DataDirUiCase):
+    def _meeting_with_audio(self, transcript=True):
+        storage = Storage(self.data)
+        meeting = storage.create_meeting('Con audio')
+        stream = storage.create_stream(meeting, 'microphone', 8000, 1)
+        segment = storage.begin_segment(stream, 0, 1.0, '2026-01-01T00:00:00+00:00')
+        Path(segment['temp_path']).write_bytes(b'\x01\x00' * 8000)
+        storage.finalize_segment(segment['id'])
+        folder = storage.root / meeting
+        if transcript:
+            (folder / 'transcript.txt').write_text('[00:00:01.000] Local: Hola\n', encoding='utf-8')
+        (folder / 'minutes.md').write_text('# Minuta', encoding='utf-8')
+        storage.finish_meeting(meeting)
+        return storage, meeting, Path(segment['path'])
+
+    def test_free_space_removes_only_the_audio_after_confirming(self):
+        storage, meeting, audio = self._meeting_with_audio()
+        window = self._window()
+        try:
+            asked = []
+            window._confirm_release_audio = lambda title, size: asked.append((title, size)) or False
+            window.open_meeting(meeting)
+            self.assertTrue(window.release_audio_button.isEnabled())
+            window.release_audio_button.click()
+            self.assertEqual(asked, [('Con audio', audio.stat().st_size)])
+            self.assertTrue(audio.is_file())  # cancelled: nothing removed
+
+            window._confirm_release_audio = lambda _title, _size: True
+            window.release_audio_button.click()
+
+            self.assertFalse(audio.exists())
+            self.assertTrue((storage.root / meeting / 'transcript.txt').is_file())
+            self.assertTrue((storage.root / meeting / 'minutes.md').is_file())
+            self.assertIn('Espacio liberado', window.status_label.text())
+            self.assertIn(meeting, {row['id'] for row in storage.list_meetings()})
+
+            window._confirm_release_audio = mock.Mock(return_value=True)
+            window.release_audio_button.click()  # nothing left: says so, never asks
+            window._confirm_release_audio.assert_not_called()
+            self.assertIn('no tiene audio', window.status_label.text())
+            window._show_error.assert_not_called()
+        finally:
+            window.close()
+
+    def test_free_space_refuses_a_meeting_without_transcript(self):
+        _storage, meeting, audio = self._meeting_with_audio(transcript=False)
+        window = self._window()
+        try:
+            window._confirm_release_audio = mock.Mock(return_value=True)
+            window.open_meeting(meeting)
+            window.release_audio_button.click()
+            window._confirm_release_audio.assert_not_called()
+            window._show_error.assert_called_once()
+            self.assertIn('transcripción', window._show_error.call_args.args[0])
+            self.assertTrue(audio.is_file())
+        finally:
+            window.close()
+
+
+class GalleryShareUiTests(_DataDirUiCase):
+    def _meeting_with_captures(self):
+        storage = Storage(self.data)
+        meeting = storage.create_meeting('Capturas')
+        frames = storage.root / meeting / 'visual-frames'
+        frames.mkdir()
+        image = QImage(4, 4, QImage.Format.Format_RGB32)
+        image.fill(0)
+        for stamp in ('20261117T100000000000Z', '20261117T100500000000Z'):
+            image.save(str(frames / f'teams-{stamp}.png'))
+        storage.finish_meeting(meeting)
+        return meeting, sorted(frames.iterdir())
+
+    def test_gallery_copies_and_exports_every_capture(self):
+        meeting, shots = self._meeting_with_captures()
+        window = self._window()
+        try:
+            window.open_meeting(meeting)
+            window._set_view('gallery')
+            self.assertTrue(window.gallery_copy_button.isEnabled())
+            self.assertTrue(window.gallery_export_button.isEnabled())
+
+            window.gallery_copy_button.click()
+            urls = QApplication.clipboard().mimeData().urls()
+            self.assertEqual([Path(url.toLocalFile()) for url in urls], shots)
+            self.assertIn('2 capturas copiadas', window.status_label.text())
+
+            window._choose_screenshots_export = lambda meeting_id: self.out / f'{meeting_id}.zip'
+            window.gallery_export_button.click()
+            target = self.out / f'{meeting}.zip'
+            self._wait_for(lambda: target.is_file() and 'Capturas exportadas' in window.status_label.text())
+            with zipfile.ZipFile(target) as archive:
+                self.assertEqual(len(archive.namelist()), 2)
+
+            window._choose_screenshots_export = lambda _meeting_id: None  # cancelled
+            window.gallery_export_button.click()
+            self.assertEqual([path.name for path in self.out.iterdir()], [target.name])
+            window._show_error.assert_not_called()
+        finally:
+            window.close()
+
+    def test_gallery_share_buttons_are_off_without_captures(self):
+        storage = Storage(self.data)
+        meeting = storage.create_meeting('Sin capturas')
+        storage.finish_meeting(meeting)
+        window = self._window()
+        try:
+            window.open_meeting(meeting)
+            window._set_view('gallery')
+            self.assertFalse(window.gallery_copy_button.isEnabled())
+            self.assertFalse(window.gallery_export_button.isEnabled())
         finally:
             window.close()
 

@@ -63,6 +63,10 @@ class _Connection(sqlite3.Connection):
 
 _IMPORTABLE_STATUSES = {'completed', 'interrupted', 'failed'}
 
+AUDIO_SEGMENT_STATUSES = ('finalized', 'recovered')
+"""Segments whose .wav is on disk and can be played or transcribed; 'released' ones were deleted."""
+_RELEASING = 'releasing'  # marked before its file is deleted; never transcribed or exported
+
 ANY = object()
 """Filter value for Storage.list_meetings meaning 'do not filter on this column'."""
 
@@ -448,6 +452,72 @@ class Storage:
                 FROM segments JOIN streams ON streams.id=segments.stream_id
                 WHERE streams.meeting_id=? ORDER BY segments.started_utc, segments.sequence''', (meeting_id,))
             return [dict(row) for row in rows]
+
+    def _stored_audio(self, db, meeting_id):
+        """Segments whose .wav may still be inside the meeting folder: (id, path, size, status).
+
+        'releasing' segments belong to a release that stopped halfway; they are picked up again.
+        """
+        meeting_dir = (self.root / meeting_id).resolve()
+        rows = db.execute('''SELECT segments.id, segments.path, segments.status FROM segments
+            JOIN streams ON streams.id=segments.stream_id
+            WHERE streams.meeting_id=? AND segments.status IN (?, ?, ?)''',
+            (meeting_id, *AUDIO_SEGMENT_STATUSES, _RELEASING))
+        stored = []
+        for row in rows:
+            path = Path(row['path'])
+            if not path.resolve().is_relative_to(meeting_dir):  # never touch files outside the meeting
+                continue
+            try:
+                size = path.stat().st_size
+            except OSError:
+                size = 0
+            stored.append((row['id'], path, size, row['status']))
+        return stored
+
+    def audio_bytes(self, meeting_id):
+        """Disk space taken by the meeting's recorded audio."""
+        with self._connect() as db:
+            return sum(size for _id, _path, size, _status in self._stored_audio(db, meeting_id))
+
+    def release_audio(self, meeting_id):
+        """Deletes the meeting's audio files and keeps everything else (transcript, minutes, screenshots).
+
+        Returns (bytes freed, files that could not be deleted). Refuses a meeting that is recording
+        or has no transcript yet: without its audio it could never be transcribed. Segments are
+        marked 'releasing' before any file is deleted, so an interrupted release never leaves the
+        database claiming audio that is gone, and the next call finishes it. A file Windows keeps
+        locked gets its previous status back so it can be released later.
+        """
+        with self._connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            meeting = db.execute('SELECT status FROM meetings WHERE id=?', (meeting_id,)).fetchone()
+            if meeting is None:
+                raise ValueError('Reunión desconocida')
+            if meeting['status'] == 'recording':
+                raise RuntimeError('No se puede liberar el audio de una reunión mientras se está grabando')
+            if not (self.root / meeting_id / 'transcript.txt').is_file():
+                raise RuntimeError('La reunión todavía no tiene transcripción; sin el audio no se podría transcribir')
+            stored = self._stored_audio(db, meeting_id)
+            db.executemany('UPDATE segments SET status=? WHERE id=?',
+                           [(_RELEASING, segment_id) for segment_id, _path, _size, _status in stored])
+        freed, released, locked = 0, [], []
+        for segment_id, path, size, status in stored:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                # An older interrupted release does not remember the status; finalized is equivalent.
+                locked.append((status if status != _RELEASING else AUDIO_SEGMENT_STATUSES[0], segment_id))
+                continue
+            freed += size
+            released.append(('released', segment_id))
+        if stored:
+            with self._connect() as db:
+                db.executemany('UPDATE segments SET status=? WHERE id=?', released + locked)
+                db.execute('INSERT INTO events (meeting_id,timestamp_utc,monotonic,kind,detail) VALUES (?,?,?,?,?)',
+                           (meeting_id, utc_now(), time.monotonic(), 'audio_released',
+                            f'{freed} bytes liberados; {len(locked)} archivos bloqueados'))
+        return freed, len(locked)
 
     def add_event(self, meeting_id, kind, detail):
         with self._connect() as db:
