@@ -18,7 +18,10 @@ import re
 import shutil
 import uuid
 
-from .minutes import DEFAULT_TIMEOUT_SECONDS, MINUTES_FILE, SUPPORTED_CLIS, MinutesError, run_cli
+from .minutes import DEFAULT_TIMEOUT_SECONDS, MINUTES_FILE, SUPPORTED_CLIS, MinutesError, run_cli_streaming
+
+ProgressCallback = Callable[[str, str], None]  # (kind, value): ("text", answer so far) or ("status", activity)
+StreamingRunner = Callable[[list[str], str, str, float, Callable[[str], None]], tuple[int, str, str]]
 
 CHAT_DIR = ".chat"
 TRANSCRIPT_FILE = "transcript.txt"
@@ -203,7 +206,8 @@ class ChatSession:
     """One conversation with a CLI over a workspace; each ask() is one turn that keeps the context.
 
     ask() blocks while the CLI answers (seconds for Claude, up to a minute for Codex), so the UI
-    calls it from a worker thread. A turn that fails leaves the conversation where it was.
+    calls it from a worker thread; the CLI's JSON events report the answer and its activity as
+    they arrive. A turn that fails leaves the conversation where it was.
     """
 
     def __init__(
@@ -212,7 +216,7 @@ class ChatSession:
         cli: str,
         *,
         which: Callable[[str], str | None] = shutil.which,
-        runner: Callable[[list[str], str, str, float], tuple[int, str, str]] = run_cli,
+        runner: StreamingRunner = run_cli_streaming,
         new_id: Callable[[], str] = lambda: str(uuid.uuid4()),
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
         session: str | None = None,
@@ -230,46 +234,58 @@ class ChatSession:
         """The CLI session to resume next time, once the conversation has one."""
         return self._session
 
-    def ask(self, question: str) -> str:
+    def ask(self, question: str, on_progress: ProgressCallback | None = None) -> str:
+        """Answer one question; `on_progress(kind, value)` hears the answer as it arrives.
+
+        kind is "text" (the answer written so far) or "status" (what the agent is doing, in
+        Spanish). It runs on the thread that called ask().
+        """
         question = question.strip()
         if not question:
             raise ChatError("Escribe una pregunta.")
         executable = self._which(self.cli)
         if executable is None:
             raise ChatError(f"No se encontró la CLI '{self.cli}' en el PATH; instálala e inicia sesión.")
+        report = on_progress or (lambda _kind, _value: None)
         if self.cli == "claude":
-            return self._ask_claude(executable, question)
-        return self._ask_codex(executable, question)
+            return self._ask_claude(executable, question, report)
+        return self._ask_codex(executable, question, report)
 
-    def _run(self, command: list[str], question: str) -> tuple[int, str, str]:
+    def _run(self, command: list[str], question: str, on_event: Callable[[dict], None]) -> tuple[int, str, str]:
+        def on_line(line: str) -> None:
+            try:
+                event = json.loads(line)
+            except ValueError:
+                return  # not an event: ignored
+            if isinstance(event, dict):
+                on_event(event)
+
         try:
-            return self._runner(command, question, str(self.workspace), self._timeout)
+            return self._runner(command, question, str(self.workspace), self._timeout, on_line)
         except MinutesError as exc:
             raise ChatError(str(exc).replace("la generación", "la pregunta")) from exc
 
-    def _ask_claude(self, executable: str, question: str) -> str:
+    def _ask_claude(self, executable: str, question: str, report: ProgressCallback) -> str:
         command = [
             executable, "-p",
             "--tools", READ_ONLY_TOOLS, "--allowedTools", READ_ONLY_TOOLS,
             # As in minutes.py: no user settings, hooks, plugins or MCP servers.
             "--setting-sources", "", "--strict-mcp-config",
             "--append-system-prompt-file", str(self.workspace / "CLAUDE.md"),
-            "--output-format", "json",
+            "--output-format", "stream-json", "--verbose", "--include-partial-messages",
         ]
         session = self._session or self._new_id()
         command += ["--resume", session] if self._session else ["--session-id", session]
-        code, stdout, stderr = self._run(command, question)
-        try:
-            result = json.loads(stdout)
-        except ValueError:
-            result = None
+        stream = _ClaudeStream(report)
+        code, stdout, stderr = self._run(command, question, stream.feed)
+        result = stream.result
         if code != 0 or not isinstance(result, dict) or result.get("is_error") or not result.get("result"):
             detail = result.get("result") if isinstance(result, dict) and result.get("result") else _error_detail(stdout, stderr)
             raise ChatError(f"Claude no pudo responder: {detail}")
         self._session = session
         return str(result["result"]).strip()
 
-    def _ask_codex(self, executable: str, question: str) -> str:
+    def _ask_codex(self, executable: str, question: str, report: ProgressCallback) -> str:
         answer_path = self.workspace / _ANSWER_FILE
         if self._session:
             command = [executable, "exec", "resume", self._session, "--json",
@@ -280,7 +296,7 @@ class ChatSession:
         command += ["-o", str(answer_path), "-"]  # the question is read from stdin
         answer_path.unlink(missing_ok=True)
         try:
-            code, stdout, stderr = self._run(command, question)
+            code, stdout, stderr = self._run(command, question, lambda event: _codex_progress(event, report))
             answer = answer_path.read_text(encoding="utf-8").strip() if answer_path.is_file() else ""
         finally:
             answer_path.unlink(missing_ok=True)
@@ -292,6 +308,68 @@ class ChatSession:
                 raise ChatError("Codex respondió, pero no devolvió la conversación para poder continuarla.")
             self._session = thread
         return answer
+
+
+WRITING = "Escribiendo la respuesta…"
+SEARCHING = "Buscando en los archivos…"
+
+
+def _tool_status(name, tool_input) -> str:
+    """Short Spanish description of a Claude tool call, for the progress line."""
+    if name == "Read":
+        path = tool_input.get("file_path") if isinstance(tool_input, dict) else None
+        file_name = _one_line(re.split(r"[\\/]", path)[-1], 60) if isinstance(path, str) else ""
+        return f"Leyendo {file_name}…" if file_name else "Leyendo un archivo…"
+    if name in ("Grep", "Glob"):
+        return SEARCHING
+    return "Consultando una herramienta…"
+
+
+class _ClaudeStream:
+    """Follows Claude's stream-json events: the text of the current message, tool calls, the result."""
+
+    def __init__(self, report: ProgressCallback):
+        self._report = report
+        self._text = ""
+        self.result: dict | None = None
+
+    def feed(self, event: dict) -> None:
+        kind = event.get("type")
+        if kind == "stream_event" and isinstance(event.get("event"), dict):
+            inner = event["event"]
+            if inner.get("type") == "message_start":
+                # A turn can hold several messages (text before a tool call, then the answer).
+                if self._text:
+                    self._text = ""
+                    self._report("text", "")
+            elif inner.get("type") == "content_block_delta" and isinstance(inner.get("delta"), dict):
+                delta = inner["delta"]
+                if delta.get("type") == "text_delta" and isinstance(delta.get("text"), str) and delta["text"]:
+                    if not self._text:
+                        self._report("status", WRITING)
+                    self._text += delta["text"]
+                    self._report("text", self._text)
+        elif kind == "assistant" and isinstance(event.get("message"), dict):
+            content = event["message"].get("content")
+            for block in content if isinstance(content, list) else []:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    self._report("status", _tool_status(block.get("name"), block.get("input")))
+        elif kind == "result":
+            self.result = event
+
+
+def _codex_progress(event: dict, report: ProgressCallback) -> None:
+    item = event.get("item")
+    if not isinstance(item, dict):
+        return
+    if event.get("type") == "item.started":
+        if item.get("type") == "command_execution":
+            report("status", SEARCHING)  # the read-only sandbox runs commands to read the copies
+        elif item.get("type") == "mcp_tool_call":
+            report("status", "Consultando una herramienta…")
+    elif event.get("type") == "item.completed" and item.get("type") == "agent_message":
+        if isinstance(item.get("text"), str) and item["text"]:
+            report("text", item["text"])  # Codex sends each message whole
 
 
 def _codex_thread(stdout: str) -> str | None:

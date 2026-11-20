@@ -1,6 +1,7 @@
 import os
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import zipfile
@@ -972,19 +973,32 @@ class MinutesUiTests(unittest.TestCase):
 
 
 class FakeChatSession:
-    """Stands in for the CLI: answers instantly, fails for the question 'falla'."""
+    """Stands in for the CLI: answers instantly, fails for the question 'falla'.
+
+    A question starting with 'lento' streams like the real CLI: it reports progress, waits for
+    `step`, reports more, and answers once `done` is set.
+    """
 
     sessions = []
+    step = done = None
 
     def __init__(self, workspace, cli, *, session=None, **_kwargs):
         self.workspace, self.cli, self.questions = workspace, cli, []
         self.resumed, self.session_id = session, session
         FakeChatSession.sessions.append(self)
 
-    def ask(self, question):
+    def ask(self, question, on_progress=None):
         from teams_lite.chat import ChatError
         if question == 'falla':
             raise ChatError("No se encontró la CLI 'claude' en el PATH; instálala e inicia sesión.")
+        if question.startswith('lento'):
+            on_progress('status', 'Leyendo minutes.md…')
+            on_progress('text', 'Se acordó')
+            on_progress('text', 'Se acordó migrar')
+            FakeChatSession.step.wait(5)
+            on_progress('status', 'Buscando en los archivos…')
+            on_progress('text', 'Se acordó migrar en enero')
+            FakeChatSession.done.wait(5)
         self.questions.append(question)
         self.session_id = self.session_id or f'fake-session-{len(FakeChatSession.sessions):04d}'
         return f'Respuesta {len(self.questions)} a {question}'
@@ -1171,6 +1185,84 @@ class ChatUiTests(unittest.TestCase):
                 self.assertIn('No se encontró la CLI', panel.notice.text())
                 self.assertTrue(panel.input.isEnabled())
                 modal.assert_not_called()
+            finally:
+                window.close()
+
+    def _stream(self):
+        FakeChatSession.step, FakeChatSession.done = threading.Event(), threading.Event()
+        self.addCleanup(FakeChatSession.done.set)  # never leave a worker waiting
+        self.addCleanup(FakeChatSession.step.set)
+
+    def test_answer_appears_while_it_is_written_with_elapsed_time_and_activity(self):
+        self._stream()
+        with tempfile.TemporaryDirectory() as d:
+            meeting_id, _ = self._meeting_with_transcript(d, minutes='# Minuta\n')
+            window = self._open(d, minutes_cli='claude')
+            try:
+                panel = window.chat_panel
+                window.view_chat_button.click()
+                now = [100.0]
+                panel._clock = lambda: now[0]
+                panel.input.setText('lento')
+                panel.send_button.click()
+
+                self._wait(lambda: 'Se acordó migrar' in panel.history.toPlainText())
+                self.assertIn('Se acordó migrar', panel.history.toPlainText())
+                self.assertEqual(panel.notice.text(), 'Claude está respondiendo… 0 s · Leyendo minutes.md…')
+                now[0] = 107.4
+                self._wait(lambda: '7 s' in panel.notice.text())  # updated every second
+                self.assertEqual(panel.notice.text(), 'Claude está respondiendo… 7 s · Leyendo minutes.md…')
+                FakeChatSession.step.set()
+                self._wait(lambda: 'Buscando' in panel.notice.text())
+                self.assertIn('Claude está respondiendo… 7 s · Buscando en los archivos…', panel.notice.text())
+                self._wait(lambda: 'en enero' in panel.history.toPlainText())
+                self.assertNotIn('Se acordó', window._current_export())  # provisional: not exported
+                saved = Path(d).resolve() / '.chat' / f'meeting-{meeting_id}' / 'conversation.json'
+                self.assertFalse(saved.exists())  # nor saved
+
+                FakeChatSession.done.set()
+                self._wait(lambda: not panel.busy)
+                history = panel.history.toPlainText()
+                self.assertIn('Respuesta 1 a lento', history)
+                self.assertNotIn('Se acordó', history)  # the final answer replaced the provisional one
+                self.assertNotIn('respondiendo', panel.notice.text())
+                self.assertFalse(panel._ticker.isActive())
+                self.assertIn('Respuesta 1 a lento', saved.read_text(encoding='utf-8'))
+                self.assertNotIn('Se acordó', saved.read_text(encoding='utf-8'))
+            finally:
+                window.close()
+
+    def test_progress_of_another_meeting_does_not_disturb_the_visible_one(self):
+        self._stream()
+        with tempfile.TemporaryDirectory() as d:
+            self._meeting_with_transcript(d, minutes='# Minuta A\n')
+            self._meeting_with_transcript(d, minutes='# Minuta B\n')
+            window = self._open(d, minutes_cli='claude')
+            try:
+                panel = window.chat_panel
+                window.view_chat_button.click()
+                streaming = panel._scope
+                panel.input.setText('lento')
+                panel.send_button.click()
+                self._wait(lambda: 'Se acordó migrar' in panel.history.toPlainText())
+
+                window.table.selectRow(1)
+                self._wait(lambda: panel._scope != streaming)
+                self.assertNotEqual(panel._scope, streaming)
+                FakeChatSession.step.set()
+                self._wait(lambda: panel._conversations[streaming].partial == 'Se acordó migrar en enero')
+                self.application.processEvents()
+                self.assertNotIn('Se acordó', panel.history.toPlainText())
+                self.assertNotIn('respondiendo', panel.notice.text())
+                self.assertTrue(panel.input.isEnabled())  # only the streaming conversation waits
+
+                window.table.selectRow(0)
+                self._wait(lambda: panel._scope == streaming)
+                self.assertIn('Se acordó migrar en enero', panel.history.toPlainText())
+                self.assertIn('Buscando en los archivos…', panel.notice.text())
+                FakeChatSession.done.set()
+                self._wait(lambda: not panel.busy)
+                self.assertIn('Respuesta 1 a lento', panel.history.toPlainText())
             finally:
                 window.close()
 

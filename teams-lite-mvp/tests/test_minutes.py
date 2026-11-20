@@ -2,6 +2,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from teams_lite.minutes import (
     generate_minutes,
     load_minutes,
     run_cli,
+    run_cli_streaming,
 )
 
 TRANSCRIPT = "Asistentes (detectados por OCR): Ana Pérez\n\n[00:00:01.000] Local: Hola"
@@ -129,6 +131,42 @@ class RunCliTests(unittest.TestCase):
             )
         self.assertEqual(0, code)
         self.assertEqual("HOLA ÑANDÚ", out.strip())
+
+
+class RunCliStreamingTests(unittest.TestCase):
+    def test_each_line_reaches_the_callback_as_it_arrives(self):
+        child = (
+            "import sys, time; sys.stdin.reconfigure(encoding='utf-8'); sys.stdout.reconfigure(encoding='utf-8'); "
+            "question = sys.stdin.read(); print('uno', flush=True); time.sleep(0.6); "
+            "print(question.upper(), flush=True); print('fallo', file=sys.stderr); sys.exit(3)"
+        )
+        seen = []
+        with tempfile.TemporaryDirectory() as work:
+            code, out, err = run_cli_streaming(
+                [sys.executable, "-c", child], "hola ñandú", work, 30,
+                lambda line: seen.append((line, time.monotonic())),
+            )
+        self.assertEqual(3, code)
+        self.assertEqual(["uno", "HOLA ÑANDÚ"], [line for line, _ in seen])
+        self.assertEqual(["uno", "HOLA ÑANDÚ"], out.splitlines())
+        self.assertEqual("fallo", err.strip())
+        # The first line arrived before the child finished, not all at once at the end.
+        self.assertGreater(seen[1][1] - seen[0][1], 0.3)
+
+    @unittest.skipUnless(sys.platform == "win32", "process-tree kill is Windows specific")
+    def test_timeout_kills_grandchildren_that_hold_the_pipes(self):
+        with tempfile.TemporaryDirectory() as work:
+            script = Path(work) / "shim.cmd"
+            script.write_text(f'@"{sys.executable}" -c "import time; time.sleep(60)"\r\n', encoding="utf-8")
+            started = os.times().elapsed
+            with self.assertRaisesRegex(MinutesError, "tiempo"):
+                run_cli_streaming([str(script)], "hola", work, 2, lambda _line: None)
+            self.assertLess(os.times().elapsed - started, 20)
+
+    def test_missing_executable_is_a_minutes_error(self):
+        with tempfile.TemporaryDirectory() as work:
+            with self.assertRaisesRegex(MinutesError, "No se pudo ejecutar"):
+                run_cli_streaming([str(Path(work) / "missing.exe")], "", work, 5, lambda _line: None)
 
 
 if __name__ == "__main__":
