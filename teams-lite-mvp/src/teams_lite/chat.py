@@ -151,7 +151,17 @@ def forget_meeting(data_root: str | Path, meeting_id: str) -> None:
     """
     if not meeting_id or Path(meeting_id).name != meeting_id or meeting_id in (".", ".."):
         return
-    discard_conversation(data_root, meeting_scope(meeting_id))
+    try:
+        _forget_copies(data_root, meeting_id)
+    finally:
+        # Last and best effort: a history file Windows keeps locked must not keep the copies.
+        try:
+            discard_conversation(data_root, meeting_scope(meeting_id))
+        except OSError:
+            pass
+
+
+def _forget_copies(data_root: str | Path, meeting_id: str) -> None:
     chat_root = (Path(data_root).resolve() / CHAT_DIR).resolve()
     if not chat_root.is_dir():
         return
@@ -189,7 +199,15 @@ def conversation_path(data_root: str | Path, scope_key: str) -> Path:
     return Path(data_root).resolve() / HISTORY_DIR / f"{_safe_name(scope_key)}.json"
 
 
+def _history_is_contained(path: Path) -> bool:
+    """A link or junction planted at data/.chat-history must never lead reads or deletes outside."""
+    folder = path.parent
+    return not folder.exists() or folder.resolve() == folder
+
+
 def _read_conversation(path: Path) -> dict | None:
+    if not _history_is_contained(path):
+        return None
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, RecursionError):  # deeply nested JSON exhausts the parser
@@ -202,6 +220,8 @@ def save_conversation(data_root: str | Path, scope_key: str, *, title: str, cli:
     """Keep a conversation on disk so it survives closing the app; written whole, then moved into place."""
     path = conversation_path(data_root, scope_key)
     path.parent.mkdir(parents=True, exist_ok=True)
+    if not _history_is_contained(path):
+        raise OSError(f"{HISTORY_DIR} no es una carpeta de la aplicación (es un enlace)")
     # The scope is stored too: two scopes can share a safe file name, and must not read each other.
     payload = {"version": _CONVERSATION_VERSION, "scope": scope_key, "title": title, "cli": cli,
                "session": session, "turns": [[speaker, text] for speaker, text in turns]}
@@ -236,6 +256,8 @@ def load_conversation(data_root: str | Path, scope_key: str) -> dict | None:
 def discard_conversation(data_root: str | Path, scope_key: str) -> None:
     """Forget the saved conversation of this scope (never another scope's that shares the file name)."""
     path = conversation_path(data_root, scope_key)
+    if not _history_is_contained(path):
+        return
     raw = _read_conversation(path)
     if raw is None or raw.get("scope") == scope_key:  # a damaged file is dropped too
         path.unlink(missing_ok=True)

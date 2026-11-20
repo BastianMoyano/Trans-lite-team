@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from teams_lite.chat import (
@@ -151,6 +152,36 @@ class ForgetMeetingTests(unittest.TestCase):
             forget_meeting(root, "Kickoff")
 
             self.assertTrue((victim / "keep.txt").is_file())
+
+    def test_a_history_file_windows_keeps_locked_never_stops_the_cleanup(self):
+        with tempfile.TemporaryDirectory() as root:
+            gone = _meeting(root, "Daily", minutes="# Minuta")
+            kept = _meeting(root, "Kickoff", minutes="# Minuta")
+            project = build_workspace(root, [gone, kept], scope_key="project-a-b", title="P")
+            own = build_workspace(root, [gone], scope_key="meeting-Daily", title="Daily")
+            save_conversation(root, "meeting-Daily", title="Daily", cli="claude", session=SESSION, turns=[("Tú", "a")])
+
+            with mock.patch("pathlib.Path.unlink", side_effect=PermissionError("in use")):
+                forget_meeting(root, "Daily")
+
+            self.assertFalse(own.exists())
+            self.assertFalse((project / "meetings" / "Daily").exists())
+
+    def test_a_history_folder_link_pointing_outside_is_never_followed(self):
+        with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as outside:
+            victim = Path(outside) / "meeting-Daily.json"
+            victim.write_text("not json", encoding="utf-8")
+            try:
+                (Path(root) / HISTORY_DIR).symlink_to(outside, target_is_directory=True)
+            except OSError:
+                self.skipTest("this account cannot create symbolic links")
+
+            discard_conversation(root, "meeting-Daily")
+            with self.assertRaises(OSError):  # the panel reports it as "no se pudo guardar"
+                save_conversation(root, "meeting-Other", title="O", cli="claude", session=SESSION, turns=[])
+
+            self.assertTrue(victim.is_file())
+            self.assertFalse((Path(outside) / "meeting-Other.json").exists())
 
     def test_unsafe_or_unknown_ids_touch_nothing(self):
         with tempfile.TemporaryDirectory() as root:
