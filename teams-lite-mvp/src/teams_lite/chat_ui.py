@@ -5,8 +5,9 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 import threading
+import time
 
-from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -41,12 +42,17 @@ class _Conversation:
     cli: str | None = None
     turns: list[tuple[str, str]] = field(default_factory=list)  # (speaker, markdown)
     saved_session: str | None = None  # CLI session of a conversation restored from disk
+    # While the CLI answers: the answer so far (shown, never saved), its activity and start time.
+    partial: str = ""
+    activity: str = ""
+    asked_at: float | None = None
 
 
 class _Relay(QObject):
-    """Carries answers from the worker thread back to the UI thread."""
+    """Carries answers and progress from the worker thread back to the UI thread."""
 
     finished = Signal(str, object, object)  # scope key, answer or None, error message or None
+    progress = Signal(str, str, str)  # scope key, "text" or "status", value
 
 
 class ChatPanel(QWidget):
@@ -54,7 +60,9 @@ class ChatPanel(QWidget):
 
     The CLI answers in a background thread, so the window stays responsive. Before every question
     the copies in data/.chat/<scope>/ are rebuilt (never while the CLI is answering, since a scope
-    asks one question at a time). Each answered turn is saved in conversation.json there, so
+    asks one question at a time). While the CLI answers, the text written so far appears as a
+    provisional last turn and the notice shows the seconds elapsed and what the CLI is doing; only
+    the final answer is kept. Each answered turn is saved in conversation.json there, so
     closing the app keeps the conversation and its CLI session; "Nueva conversación" forgets it.
     """
 
@@ -74,8 +82,18 @@ class ChatPanel(QWidget):
         self._conversations: dict[str, _Conversation] = {}
         self._scope: str | None = None
         self._busy: set[str] = set()
+        self._forgotten: set[str] = set()  # deleted while answering: the answer is dropped, never saved
         self._relay = _Relay()
         self._relay.finished.connect(self._answered)
+        self._relay.progress.connect(self._progressed)
+        self._clock = time.monotonic
+        self._ticker = QTimer(self)  # refreshes the elapsed seconds while an answer is on the way
+        self._ticker.setInterval(1000)
+        self._ticker.timeout.connect(self._show_progress)
+        self._repaint = QTimer(self)  # streamed text re-renders the history at most every 100 ms
+        self._repaint.setSingleShot(True)
+        self._repaint.setInterval(100)
+        self._repaint.timeout.connect(self._render)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -105,6 +123,7 @@ class ChatPanel(QWidget):
         self.notice = QLabel()
         self.notice.setObjectName("fieldHint")
         self.notice.setWordWrap(True)
+        self.notice.setTextFormat(Qt.TextFormat.PlainText)  # the activity names files chosen by the CLI
         layout.addWidget(self.notice)
         row = QHBoxLayout()
         row.setSpacing(8)
@@ -153,7 +172,14 @@ class ChatPanel(QWidget):
     def _has_content(self, conversation: _Conversation) -> bool:
         return any(has_chat_content(self.data_root, meeting["id"]) for meeting in conversation.meetings)
 
+    def _progress_notice(self, conversation: _Conversation) -> str:
+        who = CLI_LABELS.get(conversation.cli or "", "La IA")
+        started = conversation.asked_at if conversation.asked_at is not None else self._clock()
+        text = f"{who} está respondiendo… {max(0, int(self._clock() - started))} s"
+        return f"{text} · {conversation.activity}" if conversation.activity else text
+
     def _render(self, notice: str | None = None) -> None:
+        self._repaint.stop()  # everything is drawn now
         conversation = self._current()
         if conversation is None:
             self.scope_label.setText("")
@@ -162,12 +188,15 @@ class ChatPanel(QWidget):
         else:
             who = CLI_LABELS.get(conversation.cli or "", "")
             self.scope_label.setText(f"Conversación sobre: {conversation.title}" + (f" · con {who}" if who else ""))
-            self.history.setMarkdown("\n\n".join(f"**{speaker}:** {text}" for speaker, text in conversation.turns))
+            turns = list(conversation.turns)
+            if self.busy and conversation.partial:
+                turns.append((CLI_LABELS.get(conversation.cli or "", "IA"), conversation.partial))  # provisional
+            self.history.setMarkdown("\n\n".join(f"**{speaker}:** {text}" for speaker, text in turns))
             self.history.verticalScrollBar().setValue(self.history.verticalScrollBar().maximum())
             started = conversation.session is not None or conversation.saved_session is not None
             ready = started or self._has_content(conversation)
             if self.busy:
-                message = f"{who or 'La IA'} está respondiendo…"
+                message = self._progress_notice(conversation)
             elif not ready:
                 message = NO_CONTENT
             elif not conversation.turns:
@@ -183,7 +212,7 @@ class ChatPanel(QWidget):
     def forget(self, scope_key: str) -> None:
         """Drop a conversation whose meetings no longer exist (a deleted meeting)."""
         if scope_key in self._busy:
-            return  # its answer is still on the way; the scope is never shown again anyway
+            self._forgotten.add(scope_key)  # its answer is still on the way: drop it when it lands
         self._conversations.pop(scope_key, None)
         if scope_key == self._scope:
             self._scope = None
@@ -220,13 +249,18 @@ class ChatPanel(QWidget):
         conversation.cli = conversation.session.cli
         session = conversation.session
         conversation.turns.append(("Tú", question))
+        conversation.partial, conversation.activity, conversation.asked_at = "", "", self._clock()
         self.input.clear()
         self._busy.add(scope)
+        self._ticker.start()
         self._render()
+
+        def progress(kind: str, value: str) -> None:  # runs on the worker thread
+            self._relay.progress.emit(scope, kind, value)
 
         def work() -> None:
             try:
-                self._relay.finished.emit(scope, session.ask(question), None)
+                self._relay.finished.emit(scope, session.ask(question, on_progress=progress), None)
             except ChatError as exc:
                 self._relay.finished.emit(scope, None, str(exc))
             except Exception as exc:  # never leave the panel waiting forever
@@ -234,9 +268,34 @@ class ChatPanel(QWidget):
 
         threading.Thread(target=work, name="meeting-chat", daemon=True).start()
 
+    def _show_progress(self) -> None:
+        conversation = self._current()
+        if conversation is not None and self.busy:
+            self.notice.setText(self._progress_notice(conversation))
+
+    def _progressed(self, scope: str, kind: str, value: str) -> None:
+        conversation = self._conversations.get(scope)
+        if conversation is None or scope not in self._busy:
+            return  # a late event after the answer, or a forgotten conversation
+        if kind == "text":
+            conversation.partial = value
+            if scope == self._scope and not self._repaint.isActive():
+                self._repaint.start()
+        elif kind == "status":
+            conversation.activity = value
+            if scope == self._scope:
+                self._show_progress()
+
     def _answered(self, scope: str, answer: str | None, error: str | None) -> None:
         self._busy.discard(scope)
+        if not self._busy:
+            self._ticker.stop()
+        if scope in self._forgotten:
+            self._forgotten.discard(scope)
+            return  # the meeting was deleted meanwhile: never write its conversation back
         conversation = self._conversations.get(scope)
+        if conversation is not None:
+            conversation.partial, conversation.activity, conversation.asked_at = "", "", None
         if conversation is not None and answer is not None:
             conversation.turns.append((CLI_LABELS.get(conversation.cli or "", "IA"), answer))
             try:

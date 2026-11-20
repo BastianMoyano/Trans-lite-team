@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 
 MINUTES_FILE = "minutes.md"
 SUPPORTED_CLIS = ("claude", "codex")
@@ -69,7 +70,75 @@ def run_cli(command: list[str], stdin_text: str, cwd: str, timeout: float) -> tu
     return process.returncode, stdout or "", stderr or ""
 
 
-def _kill_tree(process: subprocess.Popen) -> None:
+def run_cli_streaming(
+    command: list[str], stdin_text: str, cwd: str, timeout: float, on_line: Callable[[str], None]
+) -> tuple[int, str, str]:
+    """Like run_cli, but hand each stdout line to `on_line` as soon as the CLI prints it.
+
+    `on_line` runs on the calling thread. On timeout the whole process tree is killed, which
+    closes the pipes and ends the read loop.
+    """
+    creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+    try:
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=cwd,
+            creationflags=creationflags,
+        )
+    except OSError as exc:
+        raise MinutesError(f"No se pudo ejecutar {Path(command[0]).name}: {exc}") from exc
+
+    def feed() -> None:
+        try:
+            process.stdin.write(stdin_text)
+            process.stdin.close()
+        except OSError:
+            pass  # the CLI exited without reading everything; its exit code tells why
+
+    stderr_parts: list[str] = []
+    timed_out = threading.Event()
+
+    def expire() -> None:
+        timed_out.set()
+        _terminate_tree(process)
+
+    helpers = [threading.Thread(target=feed, daemon=True),
+               threading.Thread(target=lambda: stderr_parts.append(process.stderr.read()), daemon=True)]
+    for helper in helpers:
+        helper.start()
+    timer = threading.Timer(timeout, expire)
+    timer.daemon = True
+    timer.start()
+    lines: list[str] = []
+    try:
+        for line in process.stdout:
+            lines.append(line)
+            on_line(line.rstrip("\r\n"))
+    except BaseException:
+        _terminate_tree(process)  # a failing callback must not leave the CLI running
+        raise
+    finally:
+        timer.cancel()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            pass
+        for helper in helpers:
+            helper.join(timeout=10)
+    if timed_out.is_set():
+        raise MinutesError(
+            f"La CLI no respondió dentro del tiempo límite ({round(timeout)} s); se canceló la generación."
+        )
+    return process.returncode, "".join(lines), "".join(stderr_parts)
+
+
+def _terminate_tree(process: subprocess.Popen) -> None:
     if sys.platform == "win32":
         subprocess.run(
             ["taskkill", "/PID", str(process.pid), "/T", "/F"],
@@ -78,6 +147,10 @@ def _kill_tree(process: subprocess.Popen) -> None:
         )
     else:
         process.kill()
+
+
+def _kill_tree(process: subprocess.Popen) -> None:
+    _terminate_tree(process)
     try:
         process.communicate(timeout=10)
     except subprocess.TimeoutExpired:

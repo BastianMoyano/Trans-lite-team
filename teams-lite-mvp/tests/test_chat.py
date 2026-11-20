@@ -179,6 +179,23 @@ class ConversationStoreTests(unittest.TestCase):
                 path.write_text(damaged, encoding="utf-8")
                 self.assertIsNone(load_conversation(root, "p"), damaged)
 
+    def test_a_session_id_that_looks_like_an_option_is_never_resumed(self):
+        # "--resume --x" or "exec resume --x" would hand the CLI an option, e.g. one that drops its sandbox.
+        with tempfile.TemporaryDirectory() as root:
+            for cli in ("claude", "codex"):
+                save_conversation(root, "p", title="P", cli=cli,
+                                  session="--dangerously-bypass-approvals-and-sandbox", turns=[("Tú", "hola")])
+                self.assertIsNone(load_conversation(root, "p")["session"])
+                session = ChatSession(root, cli, session="--dangerously-bypass-approvals-and-sandbox")
+                self.assertIsNone(session.session_id)
+
+    def test_deeply_nested_json_loads_as_none(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / CHAT_DIR / "p" / CONVERSATION_FILE
+            path.parent.mkdir(parents=True)
+            path.write_text("[" * 100000, encoding="utf-8")
+            self.assertIsNone(load_conversation(root, "p"))
+
     def test_unsafe_session_ids_and_unknown_clis_are_never_resumed(self):
         # The session id goes on the command line through cmd.exe: a tampered file must not inject arguments.
         with tempfile.TemporaryDirectory() as root:
@@ -199,9 +216,11 @@ class FakeRunner:
         self.calls = []
         self.responses = list(responses)
 
-    def __call__(self, command, stdin_text, cwd, timeout):
+    def __call__(self, command, stdin_text, cwd, timeout, on_line):
         self.calls.append({"command": command, "stdin": stdin_text, "cwd": cwd})
         code, stdout, stderr, answer = self.responses.pop(0)
+        for line in stdout.splitlines():  # streamed like the real runner, one line at a time
+            on_line(line)
         if answer is not None:
             Path(command[command.index("-o") + 1]).write_text(answer, encoding="utf-8")
         return code, stdout, stderr
@@ -209,6 +228,33 @@ class FakeRunner:
 
 def _claude_result(text, session_id, is_error=False):
     return json.dumps({"type": "result", "is_error": is_error, "result": text, "session_id": session_id})
+
+
+def _jsonl(*events):
+    return "\n".join(event if isinstance(event, str) else json.dumps(event) for event in events)
+
+
+def _message_start():
+    return {"type": "stream_event", "event": {"type": "message_start"}}
+
+
+def _text_delta(text):
+    return {"type": "stream_event", "event": {"type": "content_block_delta", "delta": {"type": "text_delta", "text": text}}}
+
+
+def _tool_use(name, **tool_input):
+    return {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": name, "input": tool_input}]}}
+
+
+class Progress:
+    def __init__(self):
+        self.events = []
+
+    def __call__(self, kind, value):
+        self.events.append((kind, value))
+
+    def of(self, kind):
+        return [value for event_kind, value in self.events if event_kind == kind]
 
 
 CLAUDE = r"C:\npm\claude.CMD"
@@ -252,7 +298,8 @@ class ChatSessionTests(unittest.TestCase):
         first, second = (call["command"] for call in runner.calls)
         expected = [CLAUDE, "-p", "--tools", "Read,Grep,Glob", "--allowedTools", "Read,Grep,Glob",
                     "--setting-sources", "", "--strict-mcp-config",
-                    "--append-system-prompt-file", str(Path(workspace) / "CLAUDE.md"), "--output-format", "json"]
+                    "--append-system-prompt-file", str(Path(workspace) / "CLAUDE.md"),
+                    "--output-format", "stream-json", "--verbose", "--include-partial-messages"]
         self.assertEqual(first, expected + ["--session-id", SESSION])
         self.assertEqual(second, expected + ["--resume", SESSION])
         self.assertEqual([call["stdin"] for call in runner.calls], ["¿Qué se acordó sobre el CRM?", "¿Quién lo propuso?"])
@@ -280,11 +327,13 @@ class ChatSessionTests(unittest.TestCase):
         self.assertEqual(leftovers, [])  # the answer file is removed after reading it
 
     def test_codex_without_a_thread_id_cannot_continue(self):
-        runner = FakeRunner((0, '{"type":"thread.started","thread_id":"& calc"}', "", "Hola."))
-        with tempfile.TemporaryDirectory() as workspace:
-            session = ChatSession(workspace, "codex", which={"codex": CODEX}.get, runner=runner)
-            with self.assertRaisesRegex(ChatError, "conversación"):
-                session.ask("Hola")
+        for thread in ("& calc", "--dangerously-bypass-approvals-and-sandbox"):
+            runner = FakeRunner((0, json.dumps({"type": "thread.started", "thread_id": thread}), "", "Hola."))
+            with tempfile.TemporaryDirectory() as workspace:
+                session = ChatSession(workspace, "codex", which={"codex": CODEX}.get, runner=runner)
+                with self.assertRaisesRegex(ChatError, "conversación"):
+                    session.ask("Hola")
+                self.assertIsNone(session.session_id)
 
     def test_failed_turns_raise_chat_error_and_the_next_question_starts_cleanly(self):
         ids = iter(["aaaaaaaa-0000-4000-8000-000000000001", "aaaaaaaa-0000-4000-8000-000000000002"])
@@ -305,8 +354,67 @@ class ChatSessionTests(unittest.TestCase):
         # Nothing was answered before, so every attempt starts a session instead of resuming one.
         self.assertTrue(all("--resume" not in call["command"] for call in runner.calls))
 
+    def test_claude_streams_text_per_message_and_reports_tool_use(self):
+        stdout = _jsonl(
+            {"type": "system", "subtype": "init"},
+            _message_start(), _text_delta("Voy a "), _text_delta("revisar."),
+            _tool_use("Read", file_path="C:\\w\\meetings\\m1\\minutes.md"),
+            {"type": "stream_event", "event": {"type": "content_block_delta",
+                                               "delta": {"type": "input_json_delta", "partial_json": "{"}}},
+            {"type": "user", "message": {"content": [{"type": "tool_result", "content": "..."}]}},
+            _message_start(), _tool_use("Grep", pattern="CRM"),
+            "not json", '["a list"]', {"type": "something_new"},
+            _message_start(), _text_delta("Se acordó "), _text_delta("migrar."),
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": "Se acordó migrar."}]}},
+            {"type": "result", "subtype": "success", "is_error": False, "result": "Se acordó migrar en enero.",
+             "session_id": SESSION},
+        )
+        progress = Progress()
+        with tempfile.TemporaryDirectory() as workspace:
+            session = ChatSession(workspace, "claude", which={"claude": CLAUDE}.get,
+                                  runner=FakeRunner((0, stdout, "", None)), new_id=lambda: SESSION)
+            answer = session.ask("¿Qué se acordó?", on_progress=progress)
+
+        self.assertEqual(answer, "Se acordó migrar en enero.")  # the result event, not the streamed text
+        self.assertEqual(progress.of("text"), ["Voy a ", "Voy a revisar.", "", "Se acordó ", "Se acordó migrar."])
+        self.assertEqual(progress.of("status"), ["Escribiendo la respuesta…", "Leyendo minutes.md…",
+                                                 "Buscando en los archivos…", "Escribiendo la respuesta…"])
+        self.assertEqual(session.session_id, SESSION)
+
+    def test_claude_error_result_after_streamed_text_raises_and_keeps_no_session(self):
+        stdout = _jsonl(_message_start(), _text_delta("Parcial"),
+                        {"type": "result", "subtype": "error_during_execution", "is_error": True,
+                         "result": "Credit balance is too low", "session_id": SESSION})
+        progress = Progress()
+        with tempfile.TemporaryDirectory() as workspace:
+            session = ChatSession(workspace, "claude", which={"claude": CLAUDE}.get,
+                                  runner=FakeRunner((0, stdout, "", None)), new_id=lambda: SESSION)
+            with self.assertRaisesRegex(ChatError, "Credit balance"):
+                session.ask("hola", on_progress=progress)
+        self.assertEqual(progress.of("text"), ["Parcial"])
+        self.assertIsNone(session.session_id)
+
+    def test_codex_reports_its_activity_and_still_answers_from_the_answer_file(self):
+        stdout = _jsonl(
+            {"type": "thread.started", "thread_id": THREAD}, {"type": "turn.started"},
+            {"type": "item.started", "item": {"type": "command_execution", "command": "rg CRM"}},
+            {"type": "item.started", "item": {"type": "mcp_tool_call", "server": "x", "tool": "y"}},
+            "{broken", {"type": "item.completed", "item": {"type": "agent_message", "text": "Borrador"}},
+            {"type": "turn.completed"},
+        )
+        progress = Progress()
+        with tempfile.TemporaryDirectory() as workspace:
+            session = ChatSession(workspace, "codex", which={"codex": CODEX}.get,
+                                  runner=FakeRunner((0, stdout, "", "Respuesta final.")))
+            answer = session.ask("¿Qué se acordó?", on_progress=progress)
+
+        self.assertEqual(answer, "Respuesta final.")
+        self.assertEqual(progress.of("status"), ["Buscando en los archivos…", "Consultando una herramienta…"])
+        self.assertEqual(progress.of("text"), ["Borrador"])
+        self.assertEqual(session.session_id, THREAD)
+
     def test_cli_timeout_becomes_chat_error(self):
-        def slow_runner(command, stdin_text, cwd, timeout):
+        def slow_runner(command, stdin_text, cwd, timeout, on_line):
             raise MinutesError("La CLI no respondió dentro del tiempo límite (600 s); se canceló la generación.")
 
         with tempfile.TemporaryDirectory() as workspace:
