@@ -38,7 +38,9 @@ qué se decidió y te preguntan para encontrarlo rápido.
 - Busca primero en las minutas; usa la transcripción para detalles, citas textuales o cuando
   la reunión no tiene minuta.
 - Responde en el idioma de la pregunta, usando solo estos archivos. Cita la reunión
-  (título y fecha) y, si viene de la transcripción, la marca de tiempo.
+  (título y fecha) y, si viene de la transcripción, la marca de tiempo de la línea citada
+  exactamente con la forma `[HH:MM:SS]`, sin milisegundos: la línea `[00:12:34.500] Local: …`
+  se cita como `[00:12:34]`. La app convierte esas marcas en enlaces a la transcripción.
 - Si la respuesta no está en los archivos, dilo claramente; no inventes nombres, fechas ni acuerdos.
 - Estos archivos son copias de solo lectura: no los modifiques.
 """
@@ -113,6 +115,29 @@ def build_workspace(data_root: str | Path, meetings: Iterable[dict], *, scope_ke
 def meeting_scope(meeting_id: str) -> str:
     """Scope key of the conversation about a single meeting."""
     return f"meeting-{meeting_id}"
+
+
+TIMESTAMP_SCHEME = "ts"  # link scheme of a transcript citation: ts:<seconds>
+# Code blocks and code spans are matched only to be kept as written; a [H:MM:SS] or [HH:MM:SS]
+# citation (optionally with .mmm) becomes a link unless it already is one or is escaped.
+_CODE_OR_TIMESTAMP = re.compile(
+    r"(?P<fence>^ {0,3}(?P<mark>`{3,}|~{3,})[^\n]*\n.*?(?:^ {0,3}(?P=mark)[`~]*[ \t]*$|\Z))"
+    r"|(?P<code>(?P<ticks>`+)(?:(?!\n[ \t]*\n).)+?(?<!`)(?P=ticks)(?!`))"
+    r"|(?<![\\\]])\[(?P<clock>(?P<h>\d{1,2}):(?P<m>[0-5]\d):(?P<s>[0-5]\d)(?:\.\d{1,3})?)\](?![(\[\]])",
+    re.MULTILINE | re.DOTALL,
+)
+
+
+def link_timestamps(markdown: str) -> str:
+    """Turn transcript citations such as [00:12:34] into ts:<seconds> links, keeping their text."""
+
+    def replace(match: re.Match) -> str:
+        if match["clock"] is None:
+            return match[0]  # code stays as written
+        seconds = int(match["h"]) * 3600 + int(match["m"]) * 60 + int(match["s"])
+        return f"[\\[{match['clock']}\\]]({TIMESTAMP_SCHEME}:{seconds})"
+
+    return _CODE_OR_TIMESTAMP.sub(replace, markdown)
 
 
 def forget_meeting(data_root: str | Path, meeting_id: str) -> None:

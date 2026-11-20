@@ -11,6 +11,7 @@ from teams_lite.chat import (
     build_workspace,
     discard_conversation,
     forget_meeting,
+    link_timestamps,
     load_conversation,
     save_conversation,
 )
@@ -61,6 +62,16 @@ class BuildWorkspaceTests(unittest.TestCase):
             self.assertEqual(claude, (workspace / "AGENTS.md").read_text(encoding="utf-8"))
             self.assertIn("Kickoff CRM", claude)
             self.assertIn("INDEX.md", claude)
+
+    def test_instructions_ask_to_cite_transcript_lines_as_hh_mm_ss(self):
+        with tempfile.TemporaryDirectory() as root:
+            meeting = _meeting(root, "Kickoff", transcript="[00:12:34.500] Local: Migramos\n")
+
+            workspace = build_workspace(root, [meeting], scope_key="meeting-Kickoff", title="Kickoff")
+
+            instructions = (workspace / "CLAUDE.md").read_text(encoding="utf-8")
+            self.assertIn("`[HH:MM:SS]`", instructions)
+            self.assertIn("`[00:12:34]`", instructions)  # an example taken from a transcript line
 
     def test_rebuild_drops_meetings_no_longer_in_scope_and_refreshes_minutes(self):
         with tempfile.TemporaryDirectory() as root:
@@ -438,6 +449,25 @@ class ChatSessionTests(unittest.TestCase):
             with self.assertRaisesRegex(ChatError, "Escribe una pregunta"):
                 session.ask("   ")
         self.assertEqual(runner.calls, [])
+
+
+class LinkTimestampsTests(unittest.TestCase):
+    def test_timestamps_become_links_to_their_second(self):
+        linked = link_timestamps("Ana lo dijo en [00:12:34] y Luis en [1:02:03.250].")
+
+        self.assertEqual(linked, "Ana lo dijo en [\\[00:12:34\\]](ts:754) y Luis en [\\[1:02:03.250\\]](ts:3723).")
+
+    def test_code_spans_existing_links_and_other_brackets_stay_as_written(self):
+        text = (
+            "Usa `[00:00:05]` o ``x [00:00:06] y``.\n\n"
+            "```\n[00:00:07] Local: hola\n```\n\n"
+            "Ya enlazado: [00:00:08](https://example.com), [12:34], [00:61:00], \\[00:00:09\\]"
+        )
+
+        self.assertEqual(link_timestamps(text), text)
+
+    def test_timestamp_after_a_code_span_is_still_linked(self):
+        self.assertEqual(link_timestamps("`code` en [00:00:10]"), "`code` en [\\[00:00:10\\]](ts:10)")
 
 
 if __name__ == "__main__":

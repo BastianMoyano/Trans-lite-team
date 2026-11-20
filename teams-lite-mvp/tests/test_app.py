@@ -10,7 +10,7 @@ from unittest import mock
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
-from PySide6.QtCore import QEvent, Qt
+from PySide6.QtCore import QEvent, Qt, QUrl
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication, QBoxLayout
 
@@ -1343,6 +1343,130 @@ class ChatUiTests(unittest.TestCase):
                 self.assertIn('minuta', page.chat_panel.notice.text())
                 self.assertFalse(page.chat_panel.send_button.isEnabled())
                 self.assertEqual(FakeChatSession.sessions, [])
+            finally:
+                window.close()
+
+    def _meeting_with_lines(self, d):
+        meeting_id, meeting_dir = self._meeting_with_transcript(d, minutes='# Minuta\n')
+        (meeting_dir / 'transcript.txt').write_text(
+            '[00:00:01.000] Local: Hola\n[00:12:30.000] Remoto: Migramos en enero\n[00:20:00.000] Local: Cierre\n',
+            encoding='utf-8')
+        return meeting_id, meeting_dir
+
+    def _selected_transcript_text(self, window):
+        rows = window.transcript_table.selectionModel().selectedRows()
+        self.assertEqual(len(rows), 1)
+        return window.transcript_table.item(rows[0].row(), 2).text()
+
+    def test_answer_timestamps_jump_to_the_transcript_line(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._meeting_with_lines(d)
+            window = self._open(d)
+            try:
+                panel = window.chat_panel
+                window.view_chat_button.click()
+                self._ask(panel, 'cita [00:12:34]')
+
+                html = panel.history.toHtml()
+                self.assertEqual(html.count('href="ts:754"'), 1)  # the answer, never the question
+                self.assertIn('Respuesta 1 a cita [00:12:34]', panel.history.toPlainText())
+                self.assertIn('Respuesta 1 a cita [00:12:34]', window._current_export())
+                self.assertNotIn('ts:', window._current_export())  # Copiar/Descargar keep the plain text
+
+                panel.history.anchorClicked.emit(QUrl('ts:754'))
+                self.assertTrue(window.view_transcript_button.isChecked())
+                self.assertIs(window.transcript_stack.currentWidget(), window.transcript_table)
+                self.assertEqual(self._selected_transcript_text(window), 'Migramos en enero')
+
+                window.view_chat_button.click()
+                panel.history.anchorClicked.emit(QUrl('ts:0'))  # before the first line: the first line
+                self.assertTrue(window.view_transcript_button.isChecked())
+                self.assertEqual(self._selected_transcript_text(window), 'Hola')
+            finally:
+                window.close()
+
+    def test_other_links_in_the_chat_do_nothing(self):
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch('PySide6.QtGui.QDesktopServices.openUrl') as open_url:
+            self._meeting_with_lines(d)
+            window = self._open(d)
+            try:
+                panel = window.chat_panel
+                window.view_chat_button.click()
+                self._ask(panel, 'cita [00:12:34]')
+                self.assertFalse(panel.history.openLinks())  # a click never navigates the history itself
+
+                panel.history.anchorClicked.emit(QUrl('https://example.com'))
+                panel.history.anchorClicked.emit(QUrl('file:///C:/Windows'))
+
+                self.assertTrue(window.view_chat_button.isChecked())
+                self.assertIn('Respuesta 1', panel.history.toPlainText())  # the history was not navigated away
+                open_url.assert_not_called()
+            finally:
+                window.close()
+
+    def test_timestamp_without_a_transcript_only_explains(self):
+        with tempfile.TemporaryDirectory() as d:
+            _, meeting_dir = self._meeting_with_transcript(d, minutes='# Minuta\n')
+            (meeting_dir / 'transcript.txt').unlink()
+            window = self._open(d)
+            try:
+                panel = window.chat_panel
+                window.view_chat_button.click()
+                self._ask(panel, 'cita [00:12:34]')
+
+                panel.history.anchorClicked.emit(QUrl('ts:754'))
+
+                self.assertTrue(window.view_chat_button.isChecked())
+                self.assertIn('transcripción', window.status_label.text())
+            finally:
+                window.close()
+
+    def test_provisional_answer_links_its_timestamps_too(self):
+        release = threading.Event()
+        self.addCleanup(release.set)
+
+        class Streaming(FakeChatSession):
+            def ask(self, question, on_progress=None):
+                on_progress('text', 'Se dijo en [00:12:34]')
+                release.wait(5)
+                return 'Se dijo en [00:12:34].'
+
+        with tempfile.TemporaryDirectory() as d, mock.patch('teams_lite.chat_ui.ChatSession', Streaming):
+            self._meeting_with_lines(d)
+            window = self._open(d)
+            try:
+                panel = window.chat_panel
+                window.view_chat_button.click()
+                panel.input.setText('¿Cuándo?')
+                panel.send_button.click()
+                self._wait(lambda: 'href="ts:754"' in panel.history.toHtml())
+                self.assertIn('href="ts:754"', panel.history.toHtml())
+                release.set()
+                self._wait(lambda: not panel.busy)
+            finally:
+                release.set()
+                window.close()
+
+    def test_project_chat_leaves_timestamps_as_plain_text(self):
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            zenith = storage.create_organization('Zenith')
+            crm = storage.create_project(zenith, 'CRM')
+            meeting_id = storage.create_meeting('Kickoff', organization_id=zenith, project_id=crm)
+            (Path(d) / meeting_id / 'minutes.md').write_text('# Minuta\n', encoding='utf-8')
+            window = MainWindow(AppConfig(data_dir=d, auto_transcribe=False))
+            window.timer.stop()
+            try:
+                page = window.preview_page
+                window.side_nav.setCurrentRow(1)
+                self._click_card(page, 'Zenith')
+                self._click_card(page, 'CRM')
+                page.chat_button.click()
+                self._ask(page.chat_panel, 'cita [00:12:34]')
+
+                self.assertIn('Respuesta 1 a cita [00:12:34]', page.chat_panel.history.toPlainText())
+                self.assertNotIn('ts:', page.chat_panel.history.toHtml())
             finally:
                 window.close()
 

@@ -7,7 +7,7 @@ from pathlib import Path
 import threading
 import time
 
-from PySide6.QtCore import QObject, Qt, QTimer, Signal
+from PySide6.QtCore import QObject, Qt, QTimer, QUrl, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -24,12 +24,15 @@ from .chat import (
     ChatSession,
     build_workspace,
     discard_conversation,
+    TIMESTAMP_SCHEME,
     has_chat_content,
+    link_timestamps,
     load_conversation,
     save_conversation,
 )
 from .minutes import CLI_LABELS
 
+YOU = "Tú"  # speaker of the user's own questions
 NO_CONTENT = "Todavía no hay transcripciones ni minutas aquí. Transcribe una reunión para poder conversar sobre ella."
 NO_SCOPE = "Selecciona una reunión para conversar sobre su minuta."
 
@@ -64,9 +67,14 @@ class ChatPanel(QWidget):
     provisional last turn and the notice shows the seconds elapsed and what the CLI is doing; only
     the final answer is kept. Each answered turn is saved in conversation.json there, so
     closing the app keeps the conversation and its CLI session; "Nueva conversación" forgets it.
+
+    With linkify_timestamps (a chat about a single meeting), [HH:MM:SS] citations in the answers
+    become links that emit timestamp_activated; elsewhere the meeting they refer to is ambiguous,
+    so they stay plain text. Links never open anything else.
     """
 
     conversation_changed = Signal()  # an answer arrived or the conversation was reset
+    timestamp_activated = Signal(int)  # seconds into the meeting of a clicked citation
 
     def __init__(
         self,
@@ -74,11 +82,13 @@ class ChatPanel(QWidget):
         *,
         default_cli: str = "claude",
         cli_provider: Callable[[], str] | None = None,
+        linkify_timestamps: bool = False,
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
         self.data_root = Path(data_root)
         self._cli_provider = cli_provider
+        self._linkify = linkify_timestamps
         self._conversations: dict[str, _Conversation] = {}
         self._scope: str | None = None
         self._busy: set[str] = set()
@@ -119,6 +129,8 @@ class ChatPanel(QWidget):
         self.history = QTextBrowser()
         self.history.setObjectName("chatHistory")
         self.history.setOpenExternalLinks(False)
+        self.history.setOpenLinks(False)  # a click only emits anchorClicked; the history never navigates
+        self.history.anchorClicked.connect(self._link_clicked)
         layout.addWidget(self.history, 1)
         self.notice = QLabel()
         self.notice.setObjectName("fieldHint")
@@ -191,7 +203,7 @@ class ChatPanel(QWidget):
             turns = list(conversation.turns)
             if self.busy and conversation.partial:
                 turns.append((CLI_LABELS.get(conversation.cli or "", "IA"), conversation.partial))  # provisional
-            self.history.setMarkdown("\n\n".join(f"**{speaker}:** {text}" for speaker, text in turns))
+            self.history.setMarkdown("\n\n".join(self._turn_markdown(speaker, text) for speaker, text in turns))
             self.history.verticalScrollBar().setValue(self.history.verticalScrollBar().maximum())
             started = conversation.session is not None or conversation.saved_session is not None
             ready = started or self._has_content(conversation)
@@ -208,6 +220,15 @@ class ChatPanel(QWidget):
         self.input.setEnabled(can_type)
         self.send_button.setEnabled(can_type)
         self.new_button.setEnabled(conversation is not None and bool(conversation.turns) and not self.busy)
+
+    def _turn_markdown(self, speaker: str, text: str) -> str:
+        if self._linkify and speaker != YOU:
+            text = link_timestamps(text)  # only the AI cites the transcript
+        return f"**{speaker}:** {text}"
+
+    def _link_clicked(self, url: QUrl) -> None:
+        if self._linkify and url.scheme() == TIMESTAMP_SCHEME and url.path().isdigit():
+            self.timestamp_activated.emit(int(url.path()))
 
     def forget(self, scope_key: str) -> None:
         """Drop a conversation whose meetings no longer exist (a deleted meeting)."""
@@ -248,7 +269,7 @@ class ChatPanel(QWidget):
             return
         conversation.cli = conversation.session.cli
         session = conversation.session
-        conversation.turns.append(("Tú", question))
+        conversation.turns.append((YOU, question))
         conversation.partial, conversation.activity, conversation.asked_at = "", "", self._clock()
         self.input.clear()
         self._busy.add(scope)
