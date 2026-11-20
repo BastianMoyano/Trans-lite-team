@@ -75,6 +75,7 @@ from .library_ui import (
     PlacementPicker,
     PreviewPage,
 )
+from .chat import forget_meeting, meeting_scope
 from .chat_ui import ChatPanel
 from .minutes import CLI_LABELS, MinutesError, generate_minutes, load_minutes
 from .previews import export_screenshots, meeting_screenshots
@@ -2412,7 +2413,7 @@ class MainWindow(QMainWindow):
         if meeting is None:
             self.chat_panel.set_scope(None, "", [])
         else:
-            self.chat_panel.set_scope(f"meeting-{meeting_id}", meeting["title"], [meeting])
+            self.chat_panel.set_scope(meeting_scope(meeting_id), meeting["title"], [meeting])
 
     def _load_transcript(self, meeting_id: str | None) -> None:
         if meeting_id is None:
@@ -2852,6 +2853,9 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self._show_error(f"No se pudo eliminar la reunión: {exc}")
             return
+        # Best effort: a copy Windows keeps locked must not undo a deletion that already happened.
+        forget_meeting(self.store.root, meeting_id)
+        self.chat_panel.forget(meeting_scope(meeting_id))
         self.table.clearSelection()
         self.delete_button.setEnabled(False)
         self.release_audio_button.setEnabled(False)

@@ -158,7 +158,7 @@ class PreviewPage(QWidget):
         self.chat_button = QPushButton("Conversar con IA")
         self.chat_button.setObjectName("ghostButton")
         self.chat_button.setCheckable(True)
-        self.chat_button.setToolTip("Muestra u oculta el chat sobre las minutas de estas reuniones")
+        self.chat_button.setToolTip("Muestra u oculta el chat sobre las minutas y transcripciones de estas reuniones")
         header.addWidget(self.chat_button)
         self.move_button = QPushButton("Mover a…")
         self.move_button.setObjectName("ghostButton")

@@ -18,10 +18,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .chat import ChatError, ChatSession, build_workspace
-from .minutes import CLI_LABELS, MINUTES_FILE
+from .chat import ChatError, ChatSession, build_workspace, has_chat_content
+from .minutes import CLI_LABELS
 
-NO_MINUTES = "Todavía no hay minutas aquí. Genera la minuta de una reunión para poder conversar sobre ella."
+NO_CONTENT = "Todavía no hay transcripciones ni minutas aquí. Transcribe una reunión para poder conversar sobre ella."
 NO_SCOPE = "Selecciona una reunión para conversar sobre su minuta."
 
 
@@ -126,15 +126,16 @@ class ChatPanel(QWidget):
             conversation = self._conversations.get(scope_key)
             if conversation is None:
                 conversation = self._conversations[scope_key] = _Conversation(title, meetings)
-            elif conversation.session is None:
-                conversation.title, conversation.meetings = title, meetings  # not started: take the latest
+            else:
+                # The copies are rebuilt before every question, so the latest meetings always apply.
+                conversation.title, conversation.meetings = title, meetings
         self._render()
 
     def _current(self) -> _Conversation | None:
         return self._conversations.get(self._scope) if self._scope is not None else None
 
-    def _has_minutes(self, conversation: _Conversation) -> bool:
-        return any((self.data_root / meeting["id"] / MINUTES_FILE).is_file() for meeting in conversation.meetings)
+    def _has_content(self, conversation: _Conversation) -> bool:
+        return any(has_chat_content(self.data_root, meeting["id"]) for meeting in conversation.meetings)
 
     def _render(self, notice: str | None = None) -> None:
         conversation = self._current()
@@ -148,11 +149,11 @@ class ChatPanel(QWidget):
             self.history.setMarkdown("\n\n".join(f"**{speaker}:** {text}" for speaker, text in conversation.turns))
             self.history.verticalScrollBar().setValue(self.history.verticalScrollBar().maximum())
             started = conversation.session is not None
-            ready = started or self._has_minutes(conversation)
+            ready = started or self._has_content(conversation)
             if self.busy:
                 message = f"{who or 'La IA'} está respondiendo…"
             elif not ready:
-                message = NO_MINUTES
+                message = NO_CONTENT
             elif not conversation.turns:
                 message = "Las respuestas salen solo de las minutas y transcripciones de estas reuniones."
             else:
@@ -162,6 +163,15 @@ class ChatPanel(QWidget):
         self.input.setEnabled(can_type)
         self.send_button.setEnabled(can_type)
         self.new_button.setEnabled(conversation is not None and bool(conversation.turns) and not self.busy)
+
+    def forget(self, scope_key: str) -> None:
+        """Drop a conversation whose meetings no longer exist (a deleted meeting)."""
+        if scope_key in self._busy:
+            return  # its answer is still on the way; the scope is never shown again anyway
+        self._conversations.pop(scope_key, None)
+        if scope_key == self._scope:
+            self._scope = None
+            self._render()
 
     def new_conversation(self) -> None:
         conversation = self._current()
@@ -176,14 +186,15 @@ class ChatPanel(QWidget):
         question = self.input.text().strip()
         if conversation is None or scope is None or not question or self.busy:
             return
-        if conversation.session is None:
-            try:
-                workspace = build_workspace(self.data_root, conversation.meetings, scope_key=scope, title=conversation.title)
+        try:
+            # Rebuilt before every question: minutes generated meanwhile reach this answer.
+            workspace = build_workspace(self.data_root, conversation.meetings, scope_key=scope, title=conversation.title)
+            if conversation.session is None:
                 conversation.session = ChatSession(workspace, self._cli())
-            except (ChatError, OSError) as exc:
-                self._render(str(exc) if isinstance(exc, ChatError) else f"No se pudo preparar el chat: {exc}")
-                return
-            conversation.cli = conversation.session.cli
+        except (ChatError, OSError) as exc:
+            self._render(str(exc) if isinstance(exc, ChatError) else f"No se pudo preparar el chat: {exc}")
+            return
+        conversation.cli = conversation.session.cli
         session = conversation.session
         conversation.turns.append(("Tú", question))
         self.input.clear()

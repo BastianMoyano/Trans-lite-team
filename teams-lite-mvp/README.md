@@ -159,12 +159,14 @@ Ask Claude Code or Codex about what was said or decided, inside the app window; 
 - **One meeting**: the **Chat con IA** view in Grabar, next to *Transcripción* and *Minuta*, talks about the selected meeting, with the CLI chosen in the selector next to *Generar minuta*.
 - **A project**: in Biblioteca, open a project (or the Cofre de reuniones / Sin proyecto) and press **Conversar con IA**; the chat opens to the right of its meetings, with its own Claude/Codex selector.
 
-Type a question and press Enter or *Enviar*; the answer appears in the panel while the app stays usable. Follow-up questions keep the context of the conversation. Each meeting and project keeps its own conversation while AstroMeet is open; **Nueva conversación** starts over. *Copiar* and *Descargar* in the Chat tab copy or save the conversation. Only meetings that already have minutes are included.
+Type a question and press Enter or *Enviar*; the answer appears in the panel while the app stays usable. Follow-up questions keep the context of the conversation. Each meeting and project keeps its own conversation while AstroMeet is open; **Nueva conversación** starts over. *Copiar* and *Descargar* in the Chat tab copy or save the conversation. Meetings with minutes, a transcript or both are included; one with only a transcript can be asked about before its minutes exist.
 
-When a conversation starts, the app rebuilds `data/.chat/<scope>/` with copies of each meeting's `minutes.md` and `transcript.txt`, an `INDEX.md` (title, date, folder) and the instructions in `CLAUDE.md` and `AGENTS.md`. Each question runs the CLI once in that folder, in the background and without a console window:
+Before every question, the app rebuilds `data/.chat/<scope>/` with fresh copies of each meeting's `minutes.md` and `transcript.txt` (so minutes generated mid-conversation reach the next answer), an `INDEX.md` (title, date, folder) and the instructions in `CLAUDE.md` and `AGENTS.md`. Each question runs the CLI once in that folder, in the background and without a console window:
 
 - Claude runs as `claude -p` with the read-only tools `Read,Grep,Glob`, without your Claude settings, hooks or MCP servers, and resumes the same session (`--session-id`, then `--resume`).
 - Codex runs as `codex exec --sandbox read-only` and `codex exec resume <thread>` with `sandbox_mode=read-only`. It keeps your Codex configuration, including its plugins and MCP servers.
+
+**Eliminar reunión** also removes the meeting's copies from every `data/.chat/` folder and its own conversation. Answers already given in a project conversation are not rewritten.
 
 The agent cannot change any file. It starts in the copies, but read tools can still open other paths by absolute name, subject to each CLI's own permission prompts; it is not a filesystem sandbox. As with minutes, meeting content is sent to Anthropic or OpenAI, and questions and meeting text are never passed on the command line. Claude usually answers in seconds, Codex can take up to a minute; a question that takes more than 10 minutes is cancelled.
 
