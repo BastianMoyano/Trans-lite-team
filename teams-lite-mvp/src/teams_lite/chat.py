@@ -145,7 +145,8 @@ def forget_meeting(data_root: str | Path, meeting_id: str) -> None:
 READ_ONLY_TOOLS = "Read,Grep,Glob"  # no shell, edits or web
 _ANSWER_FILE = ".chat-answer.txt"
 # Session and thread ids go on the command line, which cmd.exe parses: accept only plain ids.
-_ID = re.compile(r"[0-9A-Za-z-]{8,64}")
+# The first character is a letter or digit, so an id can never be read as an option ("--x").
+_ID = re.compile(r"[0-9A-Za-z][0-9A-Za-z-]{7,63}")
 
 CONVERSATION_FILE = "conversation.json"
 _CONVERSATION_VERSION = 1
@@ -175,7 +176,7 @@ def load_conversation(data_root: str | Path, scope_key: str) -> dict | None:
     """
     try:
         raw = json.loads(_conversation_path(data_root, scope_key).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):  # deeply nested JSON exhausts the parser
         return None
     if not isinstance(raw, dict) or raw.get("version") != _CONVERSATION_VERSION:
         return None

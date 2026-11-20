@@ -1091,6 +1091,31 @@ class ChatUiTests(unittest.TestCase):
             finally:
                 window.close()
 
+    def test_deleting_a_meeting_while_its_chat_answers_never_saves_that_conversation_again(self):
+        FakeChatSession.step, FakeChatSession.done = threading.Event(), threading.Event()
+        with tempfile.TemporaryDirectory() as d:
+            meeting_id, _ = self._meeting_with_transcript(d, minutes='# Minuta')
+            window = self._open(d)
+            try:
+                panel = window.chat_panel
+                window.view_chat_button.click()
+                panel.input.setText('lento')
+                panel.send_button.click()
+                self._wait(lambda: panel._conversations[f'meeting-{meeting_id}'].partial)
+
+                window._confirm_delete = lambda _title: True
+                window.delete_button.click()
+                FakeChatSession.step.set()
+                FakeChatSession.done.set()
+                self._wait(lambda: f'meeting-{meeting_id}' not in panel._busy)
+
+                self.assertFalse((Path(d) / '.chat' / f'meeting-{meeting_id}').exists())
+                self.assertNotIn(f'meeting-{meeting_id}', panel._conversations)
+            finally:
+                FakeChatSession.step.set()
+                FakeChatSession.done.set()
+                window.close()
+
     def test_deleting_a_meeting_removes_its_chat_copies_and_conversation(self):
         with tempfile.TemporaryDirectory() as d:
             meeting_id, _ = self._meeting_with_transcript(d, minutes='# Minuta\nSecreto\n')

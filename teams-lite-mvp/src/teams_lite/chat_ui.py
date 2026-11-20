@@ -82,6 +82,7 @@ class ChatPanel(QWidget):
         self._conversations: dict[str, _Conversation] = {}
         self._scope: str | None = None
         self._busy: set[str] = set()
+        self._forgotten: set[str] = set()  # deleted while answering: the answer is dropped, never saved
         self._relay = _Relay()
         self._relay.finished.connect(self._answered)
         self._relay.progress.connect(self._progressed)
@@ -211,7 +212,7 @@ class ChatPanel(QWidget):
     def forget(self, scope_key: str) -> None:
         """Drop a conversation whose meetings no longer exist (a deleted meeting)."""
         if scope_key in self._busy:
-            return  # its answer is still on the way; the scope is never shown again anyway
+            self._forgotten.add(scope_key)  # its answer is still on the way: drop it when it lands
         self._conversations.pop(scope_key, None)
         if scope_key == self._scope:
             self._scope = None
@@ -289,6 +290,9 @@ class ChatPanel(QWidget):
         self._busy.discard(scope)
         if not self._busy:
             self._ticker.stop()
+        if scope in self._forgotten:
+            self._forgotten.discard(scope)
+            return  # the meeting was deleted meanwhile: never write its conversation back
         conversation = self._conversations.get(scope)
         if conversation is not None:
             conversation.partial, conversation.activity, conversation.asked_at = "", "", None

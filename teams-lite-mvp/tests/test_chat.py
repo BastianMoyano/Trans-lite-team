@@ -179,6 +179,23 @@ class ConversationStoreTests(unittest.TestCase):
                 path.write_text(damaged, encoding="utf-8")
                 self.assertIsNone(load_conversation(root, "p"), damaged)
 
+    def test_a_session_id_that_looks_like_an_option_is_never_resumed(self):
+        # "--resume --x" or "exec resume --x" would hand the CLI an option, e.g. one that drops its sandbox.
+        with tempfile.TemporaryDirectory() as root:
+            for cli in ("claude", "codex"):
+                save_conversation(root, "p", title="P", cli=cli,
+                                  session="--dangerously-bypass-approvals-and-sandbox", turns=[("Tú", "hola")])
+                self.assertIsNone(load_conversation(root, "p")["session"])
+                session = ChatSession(root, cli, session="--dangerously-bypass-approvals-and-sandbox")
+                self.assertIsNone(session.session_id)
+
+    def test_deeply_nested_json_loads_as_none(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / CHAT_DIR / "p" / CONVERSATION_FILE
+            path.parent.mkdir(parents=True)
+            path.write_text("[" * 100000, encoding="utf-8")
+            self.assertIsNone(load_conversation(root, "p"))
+
     def test_unsafe_session_ids_and_unknown_clis_are_never_resumed(self):
         # The session id goes on the command line through cmd.exe: a tampered file must not inject arguments.
         with tempfile.TemporaryDirectory() as root:
@@ -310,11 +327,13 @@ class ChatSessionTests(unittest.TestCase):
         self.assertEqual(leftovers, [])  # the answer file is removed after reading it
 
     def test_codex_without_a_thread_id_cannot_continue(self):
-        runner = FakeRunner((0, '{"type":"thread.started","thread_id":"& calc"}', "", "Hola."))
-        with tempfile.TemporaryDirectory() as workspace:
-            session = ChatSession(workspace, "codex", which={"codex": CODEX}.get, runner=runner)
-            with self.assertRaisesRegex(ChatError, "conversación"):
-                session.ask("Hola")
+        for thread in ("& calc", "--dangerously-bypass-approvals-and-sandbox"):
+            runner = FakeRunner((0, json.dumps({"type": "thread.started", "thread_id": thread}), "", "Hola."))
+            with tempfile.TemporaryDirectory() as workspace:
+                session = ChatSession(workspace, "codex", which={"codex": CODEX}.get, runner=runner)
+                with self.assertRaisesRegex(ChatError, "conversación"):
+                    session.ask("Hola")
+                self.assertIsNone(session.session_id)
 
     def test_failed_turns_raise_chat_error_and_the_next_question_starts_cleanly(self):
         ids = iter(["aaaaaaaa-0000-4000-8000-000000000001", "aaaaaaaa-0000-4000-8000-000000000002"])
