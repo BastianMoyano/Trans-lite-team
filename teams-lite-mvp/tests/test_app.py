@@ -1040,16 +1040,69 @@ class ChatUiTests(unittest.TestCase):
             finally:
                 window.close()
 
-    def test_meeting_without_minutes_explains_it_in_the_chat_tab(self):
+    def test_deleting_a_meeting_removes_its_chat_copies_and_conversation(self):
         with tempfile.TemporaryDirectory() as d:
-            self._meeting_with_transcript(d)
+            meeting_id, _ = self._meeting_with_transcript(d, minutes='# Minuta\nSecreto\n')
+            window = self._open(d)
+            try:
+                panel = window.chat_panel
+                window.view_chat_button.click()
+                self._ask(panel, '¿Qué se acordó?')
+                workspace = Path(d).resolve() / '.chat' / f'meeting-{meeting_id}'
+                self.assertTrue((workspace / 'meetings' / meeting_id / 'minutes.md').is_file())
+
+                window._confirm_delete = lambda _title: True
+                window.delete_button.click()
+
+                self.assertFalse(workspace.exists())
+                self.assertFalse(any(Path(d, '.chat').rglob('minutes.md')))
+            finally:
+                window.close()
+
+    def test_meeting_without_minutes_or_transcript_explains_it_in_the_chat_tab(self):
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            storage.finish_meeting(storage.create_meeting('Vacía'))
             window = self._open(d)
             try:
                 window.view_chat_button.click()
                 panel = window.chat_panel
                 self.assertFalse(panel.input.isEnabled())
                 self.assertFalse(panel.send_button.isEnabled())
-                self.assertIn('minuta', panel.notice.text())
+                self.assertIn('transcripciones ni minutas', panel.notice.text())
+            finally:
+                window.close()
+
+    def test_meeting_with_only_a_transcript_can_be_asked_about(self):
+        with tempfile.TemporaryDirectory() as d:
+            meeting_id, _ = self._meeting_with_transcript(d)
+            window = self._open(d)
+            try:
+                panel = window.chat_panel
+                window.view_chat_button.click()
+                self.assertTrue(panel.input.isEnabled())
+                self._ask(panel, '¿Qué se dijo?')
+                [session] = FakeChatSession.sessions
+                copied = Path(session.workspace) / 'meetings' / meeting_id / 'transcript.txt'
+                self.assertIn('Migramos antes del 30', copied.read_text(encoding='utf-8'))
+            finally:
+                window.close()
+
+    def test_minutes_generated_mid_conversation_reach_the_next_question(self):
+        with tempfile.TemporaryDirectory() as d:
+            meeting_id, meeting_dir = self._meeting_with_transcript(d)
+            window = self._open(d)
+            try:
+                panel = window.chat_panel
+                window.view_chat_button.click()
+                self._ask(panel, 'Primera')
+                (meeting_dir / 'minutes.md').write_text('# Minuta' + chr(10) + 'Nueva decisión' + chr(10), encoding='utf-8')
+                self._ask(panel, 'Segunda')
+
+                [session] = FakeChatSession.sessions  # same conversation, same CLI session
+                self.assertEqual(session.questions, ['Primera', 'Segunda'])
+                copied = Path(session.workspace) / 'meetings' / meeting_id / 'minutes.md'
+                self.assertIn('Nueva decisión', copied.read_text(encoding='utf-8'))
             finally:
                 window.close()
 

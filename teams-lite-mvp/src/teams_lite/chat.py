@@ -29,9 +29,10 @@ Respondes preguntas sobre las reuniones de esta carpeta. Las personas olvidan qu
 qué se decidió y te preguntan para encontrarlo rápido.
 
 - `INDEX.md` lista las reuniones (título, fecha y carpeta), de la más reciente a la más antigua.
-- Cada carpeta `meetings/<reunión>/` tiene `minutes.md` (la minuta) y, si existe,
-  `transcript.txt` (la transcripción completa, con marcas de tiempo).
-- Busca primero en las minutas; usa la transcripción para detalles o citas textuales.
+- Cada carpeta `meetings/<reunión>/` tiene `minutes.md` (la minuta) y/o `transcript.txt`
+  (la transcripción completa, con marcas de tiempo); algunas reuniones solo tienen una de las dos.
+- Busca primero en las minutas; usa la transcripción para detalles, citas textuales o cuando
+  la reunión no tiene minuta.
 - Responde en el idioma de la pregunta, usando solo estos archivos. Cita la reunión
   (título y fecha) y, si viene de la transcripción, la marca de tiempo.
 - Si la respuesta no está en los archivos, dilo claramente; no inventes nombres, fechas ni acuerdos.
@@ -64,25 +65,36 @@ def _local_date(started_utc: str) -> str:
         return str(started_utc or "")
 
 
+def has_chat_content(data_root: str | Path, meeting_id: str) -> bool:
+    """A meeting can be asked about once it has minutes or a transcript."""
+    folder = Path(data_root) / meeting_id
+    return (folder / MINUTES_FILE).is_file() or (folder / TRANSCRIPT_FILE).is_file()
+
+
 def build_workspace(data_root: str | Path, meetings: Iterable[dict], *, scope_key: str, title: str) -> Path:
-    """Refresh data/.chat/<scope_key>/ with the minutes of `meetings` and return its path."""
+    """Refresh data/.chat/<scope_key>/ with the minutes and transcripts of `meetings` and return its path.
+
+    Called before every question, so minutes generated mid-conversation reach the next answer.
+    """
     root = Path(data_root).resolve()
-    with_minutes = [m for m in meetings if (root / m["id"] / MINUTES_FILE).is_file()]
-    if not with_minutes:
-        raise ChatError("No hay minutas para conversar aquí; genera la minuta de alguna reunión primero.")
+    with_content = [m for m in meetings if has_chat_content(root, m["id"])]
+    if not with_content:
+        raise ChatError(
+            "No hay minutas ni transcripciones para conversar aquí; transcribe o genera la minuta de una reunión primero."
+        )
     workspace = root / CHAT_DIR / _safe_name(scope_key)
     target = workspace / MEETINGS_DIR
     if target.exists():
         shutil.rmtree(target)
     target.mkdir(parents=True)
     rows = []
-    for meeting in with_minutes:
+    for meeting in with_content:
         source = root / meeting["id"]
         folder = target / meeting["id"]
         folder.mkdir()
-        shutil.copy2(source / MINUTES_FILE, folder / MINUTES_FILE)
-        if (source / TRANSCRIPT_FILE).is_file():
-            shutil.copy2(source / TRANSCRIPT_FILE, folder / TRANSCRIPT_FILE)
+        for name in (MINUTES_FILE, TRANSCRIPT_FILE):
+            if (source / name).is_file():
+                shutil.copy2(source / name, folder / name)
         rows.append(
             f"| {_table_cell(meeting['title'])} | {_local_date(meeting['started_utc'])} | `{MEETINGS_DIR}/{meeting['id']}/` |"
         )
@@ -92,6 +104,31 @@ def build_workspace(data_root: str | Path, meetings: Iterable[dict], *, scope_ke
     for name in ("CLAUDE.md", "AGENTS.md"):
         (workspace / name).write_text(instructions, encoding="utf-8")
     return workspace
+
+
+def meeting_scope(meeting_id: str) -> str:
+    """Scope key of the conversation about a single meeting."""
+    return f"meeting-{meeting_id}"
+
+
+def forget_meeting(data_root: str | Path, meeting_id: str) -> None:
+    """Remove a deleted meeting from every chat: its copies in each workspace and its own conversation.
+
+    Answers already saved in a project conversation may still quote it; they are not rewritten.
+    """
+    if not meeting_id or Path(meeting_id).name != meeting_id or meeting_id in (".", ".."):
+        return
+    chat_root = Path(data_root).resolve() / CHAT_DIR
+    if not chat_root.is_dir():
+        return
+    own = chat_root / _safe_name(meeting_scope(meeting_id))
+    # Two ids can share a safe name; the workspace is this meeting's only if it holds its copy.
+    if (own / MEETINGS_DIR / meeting_id).is_dir():
+        shutil.rmtree(own, ignore_errors=True)
+    for workspace in chat_root.iterdir():
+        copy = workspace / MEETINGS_DIR / meeting_id
+        if copy.is_dir() and copy.resolve().parent == (workspace / MEETINGS_DIR).resolve():
+            shutil.rmtree(copy, ignore_errors=True)
 
 
 READ_ONLY_TOOLS = "Read,Grep,Glob"  # no shell, edits or web

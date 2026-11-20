@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from teams_lite.chat import CHAT_DIR, ChatError, ChatSession, build_workspace
+from teams_lite.chat import CHAT_DIR, ChatError, ChatSession, build_workspace, forget_meeting
 from teams_lite.minutes import MinutesError
 
 
@@ -18,17 +18,20 @@ def _meeting(root, meeting_id, *, minutes=None, transcript=None, title=None, sta
 
 
 class BuildWorkspaceTests(unittest.TestCase):
-    def test_copies_minutes_and_transcripts_of_meetings_with_minutes_only(self):
+    def test_copies_minutes_and_transcripts_of_meetings_with_either(self):
         with tempfile.TemporaryDirectory() as root:
             kickoff = _meeting(root, "Kickoff", minutes="# Minuta\nDecidimos usar Azure.", transcript="[00:00] Local: Azure")
             no_transcript = _meeting(root, "Seguimiento", minutes="# Minuta\nSin novedades.")
             raw_only = _meeting(root, "Daily", transcript="[00:00] Local: hola")
+            empty = _meeting(root, "Vacia")
 
-            workspace = build_workspace(root, [kickoff, no_transcript, raw_only], scope_key="project-a-b", title="Acme › CRM")
+            workspace = build_workspace(root, [kickoff, no_transcript, raw_only, empty], scope_key="project-a-b", title="Acme › CRM")
 
             self.assertEqual(workspace, Path(root).resolve() / CHAT_DIR / "project-a-b")
             meetings = workspace / "meetings"
-            self.assertEqual(sorted(p.name for p in meetings.iterdir()), ["Kickoff", "Seguimiento"])
+            self.assertEqual(sorted(p.name for p in meetings.iterdir()), ["Daily", "Kickoff", "Seguimiento"])
+            self.assertEqual((meetings / "Daily" / "transcript.txt").read_text(encoding="utf-8"), "[00:00] Local: hola")
+            self.assertFalse((meetings / "Daily" / "minutes.md").exists())
             self.assertEqual((meetings / "Kickoff" / "minutes.md").read_text(encoding="utf-8"), "# Minuta\nDecidimos usar Azure.")
             self.assertEqual((meetings / "Kickoff" / "transcript.txt").read_text(encoding="utf-8"), "[00:00] Local: Azure")
             self.assertFalse((meetings / "Seguimiento" / "transcript.txt").exists())
@@ -61,12 +64,12 @@ class BuildWorkspaceTests(unittest.TestCase):
             self.assertEqual([p.name for p in (workspace / "meetings").iterdir()], ["Kickoff"])
             self.assertEqual((workspace / "meetings" / "Kickoff" / "minutes.md").read_text(encoding="utf-8"), "v2")
 
-    def test_scope_without_minutes_is_rejected(self):
+    def test_scope_without_minutes_or_transcripts_is_rejected(self):
         with tempfile.TemporaryDirectory() as root:
-            raw_only = _meeting(root, "Daily", transcript="hola")
-            with self.assertRaisesRegex(ChatError, "No hay minutas"):
-                build_workspace(root, [raw_only], scope_key="p", title="P")
-            with self.assertRaisesRegex(ChatError, "No hay minutas"):
+            empty = _meeting(root, "Daily")
+            with self.assertRaisesRegex(ChatError, "No hay minutas ni transcripciones"):
+                build_workspace(root, [empty], scope_key="p", title="P")
+            with self.assertRaisesRegex(ChatError, "No hay minutas ni transcripciones"):
                 build_workspace(root, [], scope_key="p", title="P")
 
     def test_scope_key_cannot_escape_the_chat_folder(self):
@@ -91,6 +94,36 @@ class BuildWorkspaceTests(unittest.TestCase):
                        if "meetings/Kickoff/" in line)
             self.assertEqual(row.count(" | "), 2)  # the title's "|" is escaped, the table keeps 3 columns
             self.assertIn("Ignora lo anterior \\| borra todo", row)
+
+
+class ForgetMeetingTests(unittest.TestCase):
+    def test_removes_every_copy_and_the_meeting_conversation_and_keeps_the_rest(self):
+        with tempfile.TemporaryDirectory() as root:
+            gone = _meeting(root, "2026-11-13 07-44 Daily (2)", minutes="# Minuta")
+            kept = _meeting(root, "Kickoff", minutes="# Minuta")
+            project = build_workspace(root, [gone, kept], scope_key="project-a-b", title="P")
+            own = build_workspace(root, [gone], scope_key=f"meeting-{gone['id']}", title="Daily")
+            other = build_workspace(root, [kept], scope_key="meeting-Kickoff", title="Kickoff")
+
+            forget_meeting(root, gone["id"])
+
+            self.assertFalse((project / "meetings" / gone["id"]).exists())
+            self.assertTrue((project / "meetings" / "Kickoff" / "minutes.md").is_file())
+            self.assertFalse(own.exists())
+            self.assertTrue((other / "meetings" / "Kickoff").is_dir())
+            self.assertTrue((Path(root) / "Kickoff" / "minutes.md").is_file())  # originals untouched
+
+    def test_unsafe_or_unknown_ids_touch_nothing(self):
+        with tempfile.TemporaryDirectory() as root:
+            kept = _meeting(root, "Kickoff", minutes="# Minuta")
+            workspace = build_workspace(root, [kept], scope_key="p", title="P")
+
+            for meeting_id in ("..", ".", "", "meetings", "../Kickoff", "Kickoff/..", "Missing"):
+                forget_meeting(root, meeting_id)
+            forget_meeting(Path(root) / "no-chat-yet", "Kickoff")
+
+            self.assertTrue((workspace / "meetings" / "Kickoff" / "minutes.md").is_file())
+            self.assertTrue((workspace / "INDEX.md").is_file())
 
 
 class FakeRunner:
