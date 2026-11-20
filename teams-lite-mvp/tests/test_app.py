@@ -17,6 +17,7 @@ from PySide6.QtWidgets import QApplication, QBoxLayout
 from teams_lite.app import APP_STYLESHEET, COLORS, _MEETING_ROLE, MainWindow
 from teams_lite.config import AppConfig
 from teams_lite.library_ui import THUMBNAIL_ROLE, ExportOptionsDialog, MoveMeetingDialog
+from teams_lite.chat import conversation_path
 from teams_lite.sharing import export_meeting, read_package
 from teams_lite.moments import load_moments
 from teams_lite.ocr import load_participants, merge_participants
@@ -985,6 +986,7 @@ class FakeChatSession:
     def __init__(self, workspace, cli, *, session=None, **_kwargs):
         self.workspace, self.cli, self.questions = workspace, cli, []
         self.resumed, self.session_id = session, session
+        self.restarted = False
         FakeChatSession.sessions.append(self)
 
     def ask(self, question, on_progress=None):
@@ -999,6 +1001,8 @@ class FakeChatSession:
             on_progress('status', 'Buscando en los archivos…')
             on_progress('text', 'Se acordó migrar en enero')
             FakeChatSession.done.wait(5)
+        if question == 'sesión perdida' and self.resumed:  # the saved session no longer exists
+            self.restarted, self.session_id = True, None
         self.questions.append(question)
         self.session_id = self.session_id or f'fake-session-{len(FakeChatSession.sessions):04d}'
         return f'Respuesta {len(self.questions)} a {question}'
@@ -1142,10 +1146,34 @@ class ChatUiTests(unittest.TestCase):
                 self._wait(lambda: f'meeting-{meeting_id}' not in panel._busy)
 
                 self.assertFalse((Path(d) / '.chat' / f'meeting-{meeting_id}').exists())
+                self.assertFalse(conversation_path(d, f'meeting-{meeting_id}').exists())
                 self.assertNotIn(f'meeting-{meeting_id}', panel._conversations)
             finally:
                 FakeChatSession.step.set()
                 FakeChatSession.done.set()
+                window.close()
+
+    def test_a_lost_saved_session_is_replaced_and_the_user_is_told(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._meeting_with_transcript(d, minutes='# Minuta')
+            window = self._open(d)
+            try:
+                window.view_chat_button.click()
+                self._ask(window.chat_panel, 'Pregunta A')
+            finally:
+                window.close()
+
+            window = self._open(d)
+            try:
+                panel = window.chat_panel
+                window.view_chat_button.click()
+                self._ask(panel, 'sesión perdida')
+                self.assertIn('Respuesta 1 a sesión perdida', panel.history.toPlainText())
+                self.assertIn('no recuerda', panel.notice.text())
+                self.assertIn('Pregunta A', panel.history.toPlainText())  # the history on screen stays
+                self._ask(panel, 'Otra')
+                self.assertNotIn('no recuerda', panel.notice.text())  # told once
+            finally:
                 window.close()
 
     def test_deleting_a_meeting_removes_its_chat_copies_and_conversation(self):
@@ -1164,6 +1192,7 @@ class ChatUiTests(unittest.TestCase):
 
                 self.assertFalse(workspace.exists())
                 self.assertFalse(any(Path(d, '.chat').rglob('minutes.md')))
+                self.assertFalse(conversation_path(d, f'meeting-{meeting_id}').exists())
             finally:
                 window.close()
 
@@ -1274,7 +1303,7 @@ class ChatUiTests(unittest.TestCase):
                 self.assertIn('Claude está respondiendo… 7 s · Buscando en los archivos…', panel.notice.text())
                 self._wait(lambda: 'en enero' in panel.history.toPlainText())
                 self.assertNotIn('Se acordó', window._current_export())  # provisional: not exported
-                saved = Path(d).resolve() / '.chat' / f'meeting-{meeting_id}' / 'conversation.json'
+                saved = conversation_path(d, f'meeting-{meeting_id}')
                 self.assertFalse(saved.exists())  # nor saved
 
                 FakeChatSession.done.set()
