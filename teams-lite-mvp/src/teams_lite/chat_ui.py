@@ -18,7 +18,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .chat import ChatError, ChatSession, build_workspace, has_chat_content
+from .chat import (
+    ChatError,
+    ChatSession,
+    build_workspace,
+    discard_conversation,
+    has_chat_content,
+    load_conversation,
+    save_conversation,
+)
 from .minutes import CLI_LABELS
 
 NO_CONTENT = "Todavía no hay transcripciones ni minutas aquí. Transcribe una reunión para poder conversar sobre ella."
@@ -32,6 +40,7 @@ class _Conversation:
     session: ChatSession | None = None
     cli: str | None = None
     turns: list[tuple[str, str]] = field(default_factory=list)  # (speaker, markdown)
+    saved_session: str | None = None  # CLI session of a conversation restored from disk
 
 
 class _Relay(QObject):
@@ -41,11 +50,12 @@ class _Relay(QObject):
 
 
 class ChatPanel(QWidget):
-    """Conversation about the minutes in scope; each scope keeps its own conversation while the app runs.
+    """Conversation about the minutes and transcripts in scope; each scope keeps its own conversation.
 
-    The CLI answers in a background thread, so the window stays responsive. The conversation
-    starts with a fresh copy of the minutes in data/.chat/<scope>/ and "Nueva conversación"
-    rebuilds it, so a running conversation is never rebuilt underneath the CLI.
+    The CLI answers in a background thread, so the window stays responsive. Before every question
+    the copies in data/.chat/<scope>/ are rebuilt (never while the CLI is answering, since a scope
+    asks one question at a time). Each answered turn is saved in conversation.json there, so
+    closing the app keeps the conversation and its CLI session; "Nueva conversación" forgets it.
     """
 
     conversation_changed = Signal()  # an answer arrived or the conversation was reset
@@ -125,11 +135,17 @@ class ChatPanel(QWidget):
         if scope_key is not None:
             conversation = self._conversations.get(scope_key)
             if conversation is None:
-                conversation = self._conversations[scope_key] = _Conversation(title, meetings)
+                conversation = self._conversations[scope_key] = self._restore(scope_key, title, meetings)
             else:
                 # The copies are rebuilt before every question, so the latest meetings always apply.
                 conversation.title, conversation.meetings = title, meetings
         self._render()
+
+    def _restore(self, scope_key: str, title: str, meetings: list[dict]) -> _Conversation:
+        saved = load_conversation(self.data_root, scope_key)
+        if saved is None:
+            return _Conversation(title, meetings)
+        return _Conversation(title, meetings, cli=saved["cli"], turns=saved["turns"], saved_session=saved["session"])
 
     def _current(self) -> _Conversation | None:
         return self._conversations.get(self._scope) if self._scope is not None else None
@@ -148,7 +164,7 @@ class ChatPanel(QWidget):
             self.scope_label.setText(f"Conversación sobre: {conversation.title}" + (f" · con {who}" if who else ""))
             self.history.setMarkdown("\n\n".join(f"**{speaker}:** {text}" for speaker, text in conversation.turns))
             self.history.verticalScrollBar().setValue(self.history.verticalScrollBar().maximum())
-            started = conversation.session is not None
+            started = conversation.session is not None or conversation.saved_session is not None
             ready = started or self._has_content(conversation)
             if self.busy:
                 message = f"{who or 'La IA'} está respondiendo…"
@@ -178,7 +194,12 @@ class ChatPanel(QWidget):
         if conversation is None or self.busy:
             return
         self._conversations[self._scope] = _Conversation(conversation.title, conversation.meetings)
-        self._render()
+        try:
+            discard_conversation(self.data_root, self._scope)
+        except OSError as exc:
+            self._render(f"No se pudo borrar la conversación guardada: {exc}")
+        else:
+            self._render()
         self.conversation_changed.emit()
 
     def send(self) -> None:
@@ -190,7 +211,9 @@ class ChatPanel(QWidget):
             # Rebuilt before every question: minutes generated meanwhile reach this answer.
             workspace = build_workspace(self.data_root, conversation.meetings, scope_key=scope, title=conversation.title)
             if conversation.session is None:
-                conversation.session = ChatSession(workspace, self._cli())
+                # A restored conversation keeps its CLI and resumes its session.
+                conversation.session = ChatSession(workspace, conversation.cli or self._cli(),
+                                                   session=conversation.saved_session)
         except (ChatError, OSError) as exc:
             self._render(str(exc) if isinstance(exc, ChatError) else f"No se pudo preparar el chat: {exc}")
             return
@@ -216,6 +239,12 @@ class ChatPanel(QWidget):
         conversation = self._conversations.get(scope)
         if conversation is not None and answer is not None:
             conversation.turns.append((CLI_LABELS.get(conversation.cli or "", "IA"), answer))
+            try:
+                save_conversation(self.data_root, scope, title=conversation.title, cli=conversation.cli,
+                                  session=conversation.session.session_id if conversation.session else None,
+                                  turns=conversation.turns)
+            except OSError as exc:
+                error = f"La respuesta llegó, pero no se pudo guardar la conversación: {exc}"
         if scope == self._scope:
             self._render(error)
             self.conversation_changed.emit()

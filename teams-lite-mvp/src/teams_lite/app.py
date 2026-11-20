@@ -2853,8 +2853,12 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self._show_error(f"No se pudo eliminar la reunión: {exc}")
             return
-        # Best effort: a copy Windows keeps locked must not undo a deletion that already happened.
-        forget_meeting(self.store.root, meeting_id)
+        # Best effort: the meeting is already deleted, so a chat copy Windows keeps locked or
+        # denies must never stop the window from catching up.
+        try:
+            forget_meeting(self.store.root, meeting_id)
+        except OSError:
+            pass
         self.chat_panel.forget(meeting_scope(meeting_id))
         self.table.clearSelection()
         self.delete_button.setEnabled(False)
