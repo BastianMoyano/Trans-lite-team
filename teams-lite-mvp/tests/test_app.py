@@ -976,8 +976,9 @@ class FakeChatSession:
 
     sessions = []
 
-    def __init__(self, workspace, cli, **_kwargs):
+    def __init__(self, workspace, cli, *, session=None, **_kwargs):
         self.workspace, self.cli, self.questions = workspace, cli, []
+        self.resumed, self.session_id = session, session
         FakeChatSession.sessions.append(self)
 
     def ask(self, question):
@@ -985,6 +986,7 @@ class FakeChatSession:
         if question == 'falla':
             raise ChatError("No se encontró la CLI 'claude' en el PATH; instálala e inicia sesión.")
         self.questions.append(question)
+        self.session_id = self.session_id or f'fake-session-{len(FakeChatSession.sessions):04d}'
         return f'Respuesta {len(self.questions)} a {question}'
 
 
@@ -1037,6 +1039,41 @@ class ChatUiTests(unittest.TestCase):
                 popen.assert_not_called()  # no terminal or other window is opened
                 self.assertTrue(window.copy_button.isEnabled())
                 self.assertIn('Respuesta 1', window._current_export())
+            finally:
+                window.close()
+
+    def test_conversation_survives_a_restart_and_resumes_the_same_session(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._meeting_with_transcript(d, minutes='# Minuta' + chr(10))
+            window = self._open(d, minutes_cli='codex')
+            try:
+                window.view_chat_button.click()
+                self._ask(window.chat_panel, 'Pregunta A')
+            finally:
+                window.close()
+
+            window = self._open(d)  # restarted, with Claude selected this time
+            try:
+                panel = window.chat_panel
+                window.view_chat_button.click()
+                self.assertIn('Respuesta 1 a Pregunta A', panel.history.toPlainText())
+                self.assertIn('Codex', panel.scope_label.text())
+                self.assertTrue(panel.new_button.isEnabled())
+                self._ask(panel, 'Pregunta B')
+
+                first, second = FakeChatSession.sessions
+                self.assertEqual((second.cli, second.resumed), ('codex', first.session_id))
+                self.assertEqual(second.questions, ['Pregunta B'])
+                self.assertIn('Respuesta 1 a Pregunta B', panel.history.toPlainText())
+
+                panel.new_button.click()  # starts over and forgets the saved conversation
+            finally:
+                window.close()
+
+            window = self._open(d)
+            try:
+                window.view_chat_button.click()
+                self.assertNotIn('Pregunta', window.chat_panel.history.toPlainText())
             finally:
                 window.close()
 

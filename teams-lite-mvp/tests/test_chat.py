@@ -3,7 +3,17 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from teams_lite.chat import CHAT_DIR, ChatError, ChatSession, build_workspace, forget_meeting
+from teams_lite.chat import (
+    CHAT_DIR,
+    CONVERSATION_FILE,
+    ChatError,
+    ChatSession,
+    build_workspace,
+    discard_conversation,
+    forget_meeting,
+    load_conversation,
+    save_conversation,
+)
 from teams_lite.minutes import MinutesError
 
 
@@ -126,6 +136,45 @@ class ForgetMeetingTests(unittest.TestCase):
             self.assertTrue((workspace / "INDEX.md").is_file())
 
 
+class ConversationStoreTests(unittest.TestCase):
+    def test_saved_conversation_comes_back_after_a_restart(self):
+        with tempfile.TemporaryDirectory() as root:
+            turns = [("Tú", "¿Qué se acordó?"), ("Claude", "Migrar en **enero**.")]
+            save_conversation(root, "meeting-Kickoff", title="Kickoff", cli="claude", session=SESSION, turns=turns)
+
+            saved = load_conversation(root, "meeting-Kickoff")
+
+            self.assertEqual(saved, {"title": "Kickoff", "cli": "claude", "session": SESSION, "turns": turns})
+            path = Path(root).resolve() / CHAT_DIR / "meeting-Kickoff" / CONVERSATION_FILE
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["version"], 1)
+            self.assertEqual([p.name for p in path.parent.iterdir()], [CONVERSATION_FILE])  # no temp file left
+
+    def test_discard_forgets_it_and_missing_or_damaged_files_load_as_none(self):
+        with tempfile.TemporaryDirectory() as root:
+            save_conversation(root, "p", title="P", cli="codex", session=THREAD, turns=[("Tú", "hola")])
+            discard_conversation(root, "p")
+            self.assertIsNone(load_conversation(root, "p"))
+            discard_conversation(root, "never-saved")
+
+            path = Path(root) / CHAT_DIR / "p" / CONVERSATION_FILE
+            for damaged in ("{", "[]", json.dumps({"version": 99, "turns": []}),
+                            json.dumps({"version": 1, "cli": "claude", "session": SESSION, "turns": [["solo"]]})):
+                path.write_text(damaged, encoding="utf-8")
+                self.assertIsNone(load_conversation(root, "p"), damaged)
+
+    def test_unsafe_session_ids_and_unknown_clis_are_never_resumed(self):
+        # The session id goes on the command line through cmd.exe: a tampered file must not inject arguments.
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / CHAT_DIR / "p" / CONVERSATION_FILE
+            path.parent.mkdir(parents=True)
+            base = {"version": 1, "title": "P", "turns": [["Tú", "hola"]]}
+            path.write_text(json.dumps({**base, "cli": "claude", "session": "x & calc.exe"}), encoding="utf-8")
+            self.assertEqual(load_conversation(root, "p")["session"], None)
+            self.assertEqual(load_conversation(root, "p")["turns"], [("Tú", "hola")])
+            path.write_text(json.dumps({**base, "cli": "powershell", "session": SESSION}), encoding="utf-8")
+            self.assertEqual((load_conversation(root, "p")["cli"], load_conversation(root, "p")["session"]), (None, None))
+
+
 class FakeRunner:
     """Records CLI calls and plays scripted answers; writes Codex's -o file like the real CLI."""
 
@@ -152,6 +201,25 @@ THREAD = "01a1ea9b-6a91-7751-8117-7baddd8096bd"
 
 
 class ChatSessionTests(unittest.TestCase):
+    def test_a_saved_session_is_resumed_from_the_first_question(self):
+        runner = FakeRunner((0, _claude_result("Sigue en enero.", SESSION), "", None))
+        with tempfile.TemporaryDirectory() as workspace:
+            session = ChatSession(workspace, "claude", which={"claude": CLAUDE}.get, runner=runner,
+                                  session=SESSION, new_id=lambda: "should-not-be-used")
+            self.assertEqual(session.session_id, SESSION)
+            session.ask("¿Y la fecha?")
+        self.assertEqual(runner.calls[0]["command"][-2:], ["--resume", SESSION])
+
+    def test_an_unsafe_saved_session_starts_a_new_one(self):
+        runner = FakeRunner((0, _claude_result("Hola.", SESSION), "", None))
+        with tempfile.TemporaryDirectory() as workspace:
+            session = ChatSession(workspace, "claude", which={"claude": CLAUDE}.get, runner=runner,
+                                  session="x & calc.exe", new_id=lambda: SESSION)
+            self.assertIsNone(session.session_id)
+            session.ask("Hola")
+            self.assertEqual(session.session_id, SESSION)
+        self.assertEqual(runner.calls[0]["command"][-2:], ["--session-id", SESSION])
+
     def test_claude_conversation_keeps_its_session_and_sends_questions_through_stdin(self):
         runner = FakeRunner(
             (0, _claude_result("Se acordó migrar en enero.", SESSION), "", None),

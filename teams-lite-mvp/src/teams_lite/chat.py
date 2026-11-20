@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from datetime import datetime
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -136,6 +137,55 @@ _ANSWER_FILE = ".chat-answer.txt"
 # Session and thread ids go on the command line, which cmd.exe parses: accept only plain ids.
 _ID = re.compile(r"[0-9A-Za-z-]{8,64}")
 
+CONVERSATION_FILE = "conversation.json"
+_CONVERSATION_VERSION = 1
+
+
+def _conversation_path(data_root: str | Path, scope_key: str) -> Path:
+    return Path(data_root).resolve() / CHAT_DIR / _safe_name(scope_key) / CONVERSATION_FILE
+
+
+def save_conversation(data_root: str | Path, scope_key: str, *, title: str, cli: str | None,
+                      session: str | None, turns: list[tuple[str, str]]) -> None:
+    """Keep a conversation on disk so it survives closing the app; written whole, then moved into place."""
+    path = _conversation_path(data_root, scope_key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"version": _CONVERSATION_VERSION, "title": title, "cli": cli, "session": session,
+               "turns": [[speaker, text] for speaker, text in turns]}
+    partial = path.with_name(f".{path.name}.part")
+    partial.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
+    os.replace(partial, path)
+
+
+def load_conversation(data_root: str | Path, scope_key: str) -> dict | None:
+    """The saved conversation, or None when there is none or the file is damaged.
+
+    The file sits in the data folder, so it is not trusted: an unknown CLI or a session id that
+    is not a plain id is dropped (the conversation then starts a new CLI session).
+    """
+    try:
+        raw = json.loads(_conversation_path(data_root, scope_key).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(raw, dict) or raw.get("version") != _CONVERSATION_VERSION:
+        return None
+    turns = raw.get("turns")
+    if not isinstance(turns, list) or not all(
+            isinstance(turn, list) and len(turn) == 2 and all(isinstance(part, str) for part in turn)
+            for turn in turns):
+        return None
+    cli = raw.get("cli") if raw.get("cli") in SUPPORTED_CLIS else None
+    session = raw.get("session")
+    if cli is None or not isinstance(session, str) or not _ID.fullmatch(session):
+        session = None
+    title = raw.get("title")
+    return {"title": title if isinstance(title, str) else "", "cli": cli, "session": session,
+            "turns": [(speaker, text) for speaker, text in turns]}
+
+
+def discard_conversation(data_root: str | Path, scope_key: str) -> None:
+    _conversation_path(data_root, scope_key).unlink(missing_ok=True)
+
 
 def _error_detail(stdout: str, stderr: str) -> str:
     lines = [line.strip() for line in (stderr or stdout or "").splitlines() if line.strip()]
@@ -158,13 +208,20 @@ class ChatSession:
         runner: Callable[[list[str], str, str, float], tuple[int, str, str]] = run_cli,
         new_id: Callable[[], str] = lambda: str(uuid.uuid4()),
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
+        session: str | None = None,
     ):
         if cli not in SUPPORTED_CLIS:
             raise ChatError(f"CLI no soportada para el chat: {cli} (usa claude o codex).")
         self.workspace = Path(workspace)
         self.cli = cli
         self._which, self._runner, self._new_id, self._timeout = which, runner, new_id, timeout
-        self._session: str | None = None  # set once a first turn succeeded
+        # A saved session (conversation.json) is resumed; set once a first turn succeeded otherwise.
+        self._session: str | None = session if isinstance(session, str) and _ID.fullmatch(session) else None
+
+    @property
+    def session_id(self) -> str | None:
+        """The CLI session to resume next time, once the conversation has one."""
+        return self._session
 
     def ask(self, question: str) -> str:
         question = question.strip()
