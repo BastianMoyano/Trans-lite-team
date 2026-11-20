@@ -72,8 +72,10 @@ class ChatPanel(QWidget):
     the copies in data/.chat/<scope>/ are rebuilt (never while the CLI is answering, since a scope
     asks one question at a time). While the CLI answers, the text written so far appears as a
     provisional last turn and the notice shows the seconds elapsed and what the CLI is doing; only
-    the final answer is kept. Each answered turn is saved in conversation.json there, so
-    closing the app keeps the conversation and its CLI session; "Nueva conversación" forgets it.
+    the final answer is kept. Each answered turn is saved in data/.chat-history/<scope>.json
+    (outside the folder the CLI searches), so closing the app keeps the conversation and its CLI
+    session; "Nueva conversación" forgets it. A saved session the CLI lost is replaced once, and
+    the notice says the AI no longer remembers the earlier answers.
 
     With linkify_timestamps (a chat about a single meeting), [HH:MM:SS] citations in the answers
     become links that emit timestamp_activated; elsewhere the meeting they refer to is ambiguous,
@@ -354,6 +356,12 @@ class ChatPanel(QWidget):
                                   turns=conversation.turns)
             except OSError as exc:
                 error = f"La respuesta llegó, pero no se pudo guardar la conversación: {exc}"
+            if getattr(conversation.session, "restarted", False):
+                conversation.session.restarted = False  # told once
+                error = error or (
+                    f"La sesión guardada ya no existía en {CLI_LABELS.get(conversation.cli or '', 'la CLI')}, "
+                    "así que se empezó una nueva: la IA no recuerda las respuestas anteriores de esta conversación."
+                )
         if scope == self._scope:
             self._render(error)
             self.conversation_changed.emit()

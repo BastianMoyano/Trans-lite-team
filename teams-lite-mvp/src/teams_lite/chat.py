@@ -50,6 +50,10 @@ class ChatError(RuntimeError):
     """The chat could not be opened; the message is shown to the user."""
 
 
+class _RunnerError(ChatError):
+    """The CLI process itself failed (timeout, could not start), not the conversation."""
+
+
 def _one_line(value, limit: int = 160) -> str:
     """Titles can come from imported packages: keep them on one line so they add no instructions."""
     return re.sub(r"\s+", " ", str(value or "")).strip()[:limit]
@@ -147,6 +151,17 @@ def forget_meeting(data_root: str | Path, meeting_id: str) -> None:
     """
     if not meeting_id or Path(meeting_id).name != meeting_id or meeting_id in (".", ".."):
         return
+    try:
+        _forget_copies(data_root, meeting_id)
+    finally:
+        # Last and best effort: a history file Windows keeps locked must not keep the copies.
+        try:
+            discard_conversation(data_root, meeting_scope(meeting_id))
+        except OSError:
+            pass
+
+
+def _forget_copies(data_root: str | Path, meeting_id: str) -> None:
     chat_root = (Path(data_root).resolve() / CHAT_DIR).resolve()
     if not chat_root.is_dir():
         return
@@ -173,21 +188,43 @@ _ANSWER_FILE = ".chat-answer.txt"
 # The first character is a letter or digit, so an id can never be read as an option ("--x").
 _ID = re.compile(r"[0-9A-Za-z][0-9A-Za-z-]{7,63}")
 
-CONVERSATION_FILE = "conversation.json"
+# Saved conversations live next to .chat, never inside it: the CLI searches its workspace, and
+# earlier answers (possibly quoting a deleted meeting) must not become search material.
+HISTORY_DIR = ".chat-history"
 _CONVERSATION_VERSION = 1
 
 
-def _conversation_path(data_root: str | Path, scope_key: str) -> Path:
-    return Path(data_root).resolve() / CHAT_DIR / _safe_name(scope_key) / CONVERSATION_FILE
+def conversation_path(data_root: str | Path, scope_key: str) -> Path:
+    """Where the conversation of a scope is saved: data/.chat-history/<scope>.json."""
+    return Path(data_root).resolve() / HISTORY_DIR / f"{_safe_name(scope_key)}.json"
+
+
+def _history_is_contained(path: Path) -> bool:
+    """A link or junction planted at data/.chat-history must never lead reads or deletes outside."""
+    folder = path.parent
+    return not folder.exists() or folder.resolve() == folder
+
+
+def _read_conversation(path: Path) -> dict | None:
+    if not _history_is_contained(path):
+        return None
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError):  # deeply nested JSON exhausts the parser
+        return None
+    return raw if isinstance(raw, dict) and raw.get("version") == _CONVERSATION_VERSION else None
 
 
 def save_conversation(data_root: str | Path, scope_key: str, *, title: str, cli: str | None,
                       session: str | None, turns: list[tuple[str, str]]) -> None:
     """Keep a conversation on disk so it survives closing the app; written whole, then moved into place."""
-    path = _conversation_path(data_root, scope_key)
+    path = conversation_path(data_root, scope_key)
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"version": _CONVERSATION_VERSION, "title": title, "cli": cli, "session": session,
-               "turns": [[speaker, text] for speaker, text in turns]}
+    if not _history_is_contained(path):
+        raise OSError(f"{HISTORY_DIR} no es una carpeta de la aplicación (es un enlace)")
+    # The scope is stored too: two scopes can share a safe file name, and must not read each other.
+    payload = {"version": _CONVERSATION_VERSION, "scope": scope_key, "title": title, "cli": cli,
+               "session": session, "turns": [[speaker, text] for speaker, text in turns]}
     partial = path.with_name(f".{path.name}.part")
     partial.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
     os.replace(partial, path)
@@ -199,11 +236,8 @@ def load_conversation(data_root: str | Path, scope_key: str) -> dict | None:
     The file sits in the data folder, so it is not trusted: an unknown CLI or a session id that
     is not a plain id is dropped (the conversation then starts a new CLI session).
     """
-    try:
-        raw = json.loads(_conversation_path(data_root, scope_key).read_text(encoding="utf-8"))
-    except (OSError, ValueError, RecursionError):  # deeply nested JSON exhausts the parser
-        return None
-    if not isinstance(raw, dict) or raw.get("version") != _CONVERSATION_VERSION:
+    raw = _read_conversation(conversation_path(data_root, scope_key))
+    if raw is None or raw.get("scope") != scope_key:
         return None
     turns = raw.get("turns")
     if not isinstance(turns, list) or not all(
@@ -220,7 +254,13 @@ def load_conversation(data_root: str | Path, scope_key: str) -> dict | None:
 
 
 def discard_conversation(data_root: str | Path, scope_key: str) -> None:
-    _conversation_path(data_root, scope_key).unlink(missing_ok=True)
+    """Forget the saved conversation of this scope (never another scope's that shares the file name)."""
+    path = conversation_path(data_root, scope_key)
+    if not _history_is_contained(path):
+        return
+    raw = _read_conversation(path)
+    if raw is None or raw.get("scope") == scope_key:  # a damaged file is dropped too
+        path.unlink(missing_ok=True)
 
 
 def _error_detail(stdout: str, stderr: str) -> str:
@@ -252,8 +292,11 @@ class ChatSession:
         self.workspace = Path(workspace)
         self.cli = cli
         self._which, self._runner, self._new_id, self._timeout = which, runner, new_id, timeout
-        # A saved session (conversation.json) is resumed; set once a first turn succeeded otherwise.
+        # A saved session is resumed; set once a first turn succeeded otherwise.
         self._session: str | None = session if isinstance(session, str) and _ID.fullmatch(session) else None
+        # Until it answers once, a restored session may be gone from the CLI (pruned, other PC).
+        self._unconfirmed_restore = self._session is not None
+        self.restarted = False  # set when a lost saved session was replaced by a new one
 
     @property
     def session_id(self) -> str | None:
@@ -273,9 +316,20 @@ class ChatSession:
         if executable is None:
             raise ChatError(f"No se encontró la CLI '{self.cli}' en el PATH; instálala e inicia sesión.")
         report = on_progress or (lambda _kind, _value: None)
-        if self.cli == "claude":
-            return self._ask_claude(executable, question, report)
-        return self._ask_codex(executable, question, report)
+        ask = self._ask_claude if self.cli == "claude" else self._ask_codex
+        try:
+            answer = ask(executable, question, report)
+        except _RunnerError:
+            raise  # a timeout or a CLI that cannot start: a new session would not help
+        except ChatError:
+            if not self._unconfirmed_restore:
+                raise
+            # The saved session no longer exists for the CLI: ask again in a new one, once.
+            self._unconfirmed_restore, self._session, self.restarted = False, None, True
+            report("status", "La sesión anterior ya no está disponible; empezando una nueva…")
+            answer = ask(executable, question, report)
+        self._unconfirmed_restore = False
+        return answer
 
     def _run(self, command: list[str], question: str, on_event: Callable[[dict], None]) -> tuple[int, str, str]:
         def on_line(line: str) -> None:
@@ -289,7 +343,7 @@ class ChatSession:
         try:
             return self._runner(command, question, str(self.workspace), self._timeout, on_line)
         except MinutesError as exc:
-            raise ChatError(str(exc).replace("la generación", "la pregunta")) from exc
+            raise _RunnerError(str(exc).replace("la generación", "la pregunta")) from exc
 
     def _ask_claude(self, executable: str, question: str, report: ProgressCallback) -> str:
         command = [
