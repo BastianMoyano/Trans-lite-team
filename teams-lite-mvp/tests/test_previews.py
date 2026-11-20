@@ -1,9 +1,10 @@
 import json
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
-from teams_lite.previews import meeting_screenshots, meeting_thumbnail
+from teams_lite.previews import export_screenshots, meeting_screenshots, meeting_thumbnail
 
 
 def _write_moments(meeting_dir, moments):
@@ -97,6 +98,34 @@ class MeetingScreenshotsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             self.assertEqual(meeting_screenshots(Path(d)), [])
             self.assertEqual(meeting_screenshots(Path(d) / 'missing'), [])
+
+
+class ExportScreenshotsTests(unittest.TestCase):
+    def test_zips_every_capture_in_gallery_order(self):
+        with tempfile.TemporaryDirectory() as d:
+            meeting = Path(d) / 'meeting'
+            (meeting / 'moments').mkdir(parents=True)
+            (meeting / 'moments' / 'a.jpg').write_bytes(b'moment')
+            (meeting / 'visual-frames').mkdir()
+            (meeting / 'visual-frames' / 'teams-20261117T100000000000Z.png').write_bytes(b'frame')
+            (meeting / 'microphone-1-000000.wav').write_bytes(b'audio')
+            _write_moments(meeting, [{'offset_seconds': 3.0, 'image': 'moments/a.jpg'}])
+            destination = Path(d) / 'out' / 'capturas.zip'
+
+            written = export_screenshots(meeting, destination)
+
+            self.assertEqual(written, destination)
+            with zipfile.ZipFile(destination) as archive:
+                self.assertEqual(archive.namelist(), ['001-a.jpg', '002-teams-20261117T100000000000Z.png'])
+                self.assertEqual(archive.read('001-a.jpg'), b'moment')
+            self.assertEqual(sorted(path.name for path in destination.parent.iterdir()), ['capturas.zip'])
+
+    def test_meeting_without_screenshots_cannot_be_exported(self):
+        with tempfile.TemporaryDirectory() as d:
+            destination = Path(d) / 'capturas.zip'
+            with self.assertRaises(ValueError):
+                export_screenshots(Path(d), destination)
+            self.assertFalse(destination.exists())
 
 
 if __name__ == '__main__':
