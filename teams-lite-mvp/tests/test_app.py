@@ -1091,6 +1091,38 @@ class ChatUiTests(unittest.TestCase):
             finally:
                 window.close()
 
+    def test_suggested_questions_are_asked_with_one_click(self):
+        from teams_lite.chat_ui import SUGGESTED_QUESTIONS
+        with tempfile.TemporaryDirectory() as d:
+            self._meeting_with_transcript(d)
+            window = self._open(d)
+            try:
+                panel = window.chat_panel
+                window.view_chat_button.click()
+                labels = [button.text() for button in panel.suggestion_buttons]
+                self.assertEqual(labels, ['Tareas por persona', 'Decisiones tomadas', 'Pendientes sin dueño'])
+                self.assertTrue(all(button.isEnabled() for button in panel.suggestion_buttons))
+
+                panel.suggestion_buttons[1].click()
+                self._wait(lambda: not panel.busy)
+
+                [session] = FakeChatSession.sessions
+                self.assertEqual(session.questions, [SUGGESTED_QUESTIONS[1][1]])
+                self.assertIn('Respuesta 1', panel.history.toPlainText())
+            finally:
+                window.close()
+
+    def test_suggested_questions_are_off_when_there_is_nothing_to_ask_about(self):
+        with tempfile.TemporaryDirectory() as d:
+            storage = Storage(d)
+            storage.finish_meeting(storage.create_meeting('Vacía'))
+            window = self._open(d)
+            try:
+                window.view_chat_button.click()
+                self.assertFalse(any(button.isEnabled() for button in window.chat_panel.suggestion_buttons))
+            finally:
+                window.close()
+
     def test_deleting_a_meeting_while_its_chat_answers_never_saves_that_conversation_again(self):
         FakeChatSession.step, FakeChatSession.done = threading.Event(), threading.Event()
         with tempfile.TemporaryDirectory() as d:

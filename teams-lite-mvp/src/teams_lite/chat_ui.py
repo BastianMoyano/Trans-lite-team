@@ -36,6 +36,13 @@ YOU = "Tú"  # speaker of the user's own questions
 NO_CONTENT = "Todavía no hay transcripciones ni minutas aquí. Transcribe una reunión para poder conversar sobre ella."
 NO_SCOPE = "Selecciona una reunión para conversar sobre su minuta."
 
+# The questions people ask most after a meeting: (button label, question sent to the AI).
+SUGGESTED_QUESTIONS = (
+    ("Tareas por persona", "¿Qué tareas quedaron y quién es responsable de cada una? Agrúpalas por persona."),
+    ("Decisiones tomadas", "¿Qué decisiones se tomaron? Lista cada una con su contexto."),
+    ("Pendientes sin dueño", "¿Qué temas quedaron pendientes o sin un responsable claro?"),
+)
+
 
 @dataclass
 class _Conversation:
@@ -137,6 +144,19 @@ class ChatPanel(QWidget):
         self.notice.setWordWrap(True)
         self.notice.setTextFormat(Qt.TextFormat.PlainText)  # the activity names files chosen by the CLI
         layout.addWidget(self.notice)
+        suggestions = QHBoxLayout()
+        suggestions.setSpacing(6)
+        self.suggestion_buttons: list[QPushButton] = []
+        for label, question in SUGGESTED_QUESTIONS:
+            button = QPushButton(label)
+            button.setObjectName("ghostButton")
+            button.setToolTip(question)
+            button.setAccessibleName(f"Preguntar: {question}")
+            button.clicked.connect(lambda _checked=False, question=question: self.ask(question))
+            self.suggestion_buttons.append(button)
+            suggestions.addWidget(button)
+        suggestions.addStretch(1)
+        layout.addLayout(suggestions)
         row = QHBoxLayout()
         row.setSpacing(8)
         self.input = QLineEdit()
@@ -219,6 +239,8 @@ class ChatPanel(QWidget):
         can_type = ready and not self.busy
         self.input.setEnabled(can_type)
         self.send_button.setEnabled(can_type)
+        for button in self.suggestion_buttons:
+            button.setEnabled(can_type)
         self.new_button.setEnabled(conversation is not None and bool(conversation.turns) and not self.busy)
 
     def _turn_markdown(self, speaker: str, text: str) -> str:
@@ -251,6 +273,13 @@ class ChatPanel(QWidget):
         else:
             self._render()
         self.conversation_changed.emit()
+
+    def ask(self, question: str) -> None:
+        """Ask a question as if typed (the suggested-question buttons)."""
+        if self.busy:
+            return
+        self.input.setText(question)
+        self.send()
 
     def send(self) -> None:
         conversation, scope = self._current(), self._scope
