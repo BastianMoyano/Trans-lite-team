@@ -977,6 +977,7 @@ class AppSignals(QObject):
 
 
 _MEETING_ROLE = Qt.ItemDataRole.UserRole + 1
+_TURN_START_ROLE = Qt.ItemDataRole.UserRole + 2  # seconds where a transcript row starts (turns only)
 _BADGE_COLORS = {
     "completed": ("#12301F", "#4ADE80"),
     "recording": ("#3A1717", "#F87171"),
@@ -1930,8 +1931,10 @@ class MainWindow(QMainWindow):
         self.minutes_view.document().setDefaultStyleSheet(MINUTES_DOCUMENT_CSS)
         self.transcript_stack.addWidget(self.minutes_view)
         self.chat_panel = ChatPanel(
-            self.store.root, cli_provider=lambda: str(self.minutes_cli_combo.currentData())
+            self.store.root, cli_provider=lambda: str(self.minutes_cli_combo.currentData()),
+            linkify_timestamps=True,  # one meeting: a cited [HH:MM:SS] can only mean its transcript
         )
+        self.chat_panel.timestamp_activated.connect(self._jump_to_transcript)
         self.transcript_stack.addWidget(self.chat_panel)
         self.transcript_stack.addWidget(self._build_gallery())
         # Copiar and Descargar follow the conversation while the Chat tab is visible.
@@ -2051,6 +2054,27 @@ class MainWindow(QMainWindow):
         image = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
         if image and Path(image).is_file():
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(image)))
+
+    def _jump_to_transcript(self, seconds: int) -> None:
+        """Show the transcript line a chat answer cited: the last one starting at or before it."""
+        table = self.transcript_table
+        starts = []
+        for row in range(table.rowCount()):
+            item = table.item(row, 0)
+            start = item.data(_TURN_START_ROLE) if item is not None else None
+            if start is not None:
+                starts.append((row, start))
+        if not self._transcript_raw or not starts:
+            self._set_status("Esta reunión no tiene transcripción para ir a ese momento.", tone="warning")
+            return
+        target = starts[0][0]  # a citation before the first line lands on the first line
+        for row, start in starts:  # rows are sorted by start
+            if start > seconds:
+                break
+            target = row
+        self._set_view("transcript")
+        table.selectRow(target)
+        table.scrollToItem(table.item(target, 0), QAbstractItemView.ScrollHint.PositionAtCenter)
 
     def _sync_ocr_button(self) -> None:
         self.ocr_button.setEnabled(self.recorder is not None and self.ocr_checkbox.isChecked())
@@ -2697,6 +2721,8 @@ class MainWindow(QMainWindow):
             else:
                 clock = f"{format_clock(turn['start'])} –\n{format_clock(turn['end'])}"
             time_item = QTableWidgetItem(clock)
+            if turn["start"] is not None:
+                time_item.setData(_TURN_START_ROLE, float(turn["start"]))  # where a chat citation lands
             time_item.setFont(mono)
             time_item.setForeground(muted)
             time_item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
